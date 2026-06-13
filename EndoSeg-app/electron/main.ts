@@ -205,7 +205,7 @@ function registerIpc(): void {
         ffmpegPath: resolveBinary(ffmpegPath),
         threshold: settings.dedupThreshold,
         now: nowIso(),
-        onProgress: (frames) => send({ phase: "hash", frames }),
+        onProgress: (p) => send({ phase: p.phase, frames: p.done }),
       });
       return await updateStageOnDisk(
         libraryDir,

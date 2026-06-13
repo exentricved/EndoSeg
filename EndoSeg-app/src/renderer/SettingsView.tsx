@@ -105,6 +105,7 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
               max={64}
               value={settings.dedupThreshold}
               onChange={(e) => {
+                if (e.target.value === "") return; // don't treat a cleared field as 0
                 const n = Number(e.target.value);
                 if (Number.isInteger(n) && n >= 0 && n <= 64) void patch({ dedupThreshold: n });
               }}

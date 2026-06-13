@@ -161,13 +161,18 @@ export interface DedupResult {
   dropped: number;
 }
 
+export interface DedupProgress {
+  phase: "hash" | "copy";
+  done: number;
+}
+
 export interface RunDedupOptions {
   baseDir: string;
   projectId: string;
   ffmpegPath: string;
   threshold: number;
   now: string;
-  onProgress?: (done: number) => void;
+  onProgress?: (p: DedupProgress) => void;
 }
 
 /** Full dedup: hash raw frames → plan → copy kept frames → write report. */
@@ -176,7 +181,12 @@ export async function runDedup(opts: RunDedupOptions): Promise<DedupResult> {
   const rawDir = path.join(dir, "01_frames", "raw");
   const keptDir = path.join(dir, "01_frames", "kept");
 
-  const hashes = await hashFrames(opts.ffmpegPath, rawDir, opts.onProgress);
+  const onProgress = opts.onProgress;
+  const hashes = await hashFrames(
+    opts.ffmpegPath,
+    rawDir,
+    onProgress ? (done) => onProgress({ phase: "hash", done }) : undefined,
+  );
   if (hashes.length === 0) throw new Error("No extracted frames found — run intake first.");
 
   const plan = planDedup(hashes, opts.threshold);
@@ -184,8 +194,9 @@ export async function runDedup(opts: RunDedupOptions): Promise<DedupResult> {
   // Rebuild kept/ from scratch so re-running is idempotent.
   await fs.rm(keptDir, { recursive: true, force: true });
   await fs.mkdir(keptDir, { recursive: true });
-  for (const file of plan.kept) {
-    await fs.copyFile(path.join(rawDir, file), path.join(keptDir, file));
+  for (let i = 0; i < plan.kept.length; i++) {
+    await fs.copyFile(path.join(rawDir, plan.kept[i]), path.join(keptDir, plan.kept[i]));
+    onProgress?.({ phase: "copy", done: i + 1 });
   }
 
   const report: DedupReport = {
