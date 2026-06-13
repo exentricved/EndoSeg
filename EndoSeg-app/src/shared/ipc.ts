@@ -17,6 +17,8 @@ export const IPC = {
   intakePickVideo: "intake:pickVideo",
   intakeRun: "intake:run",
   intakeProgress: "intake:progress",
+  dedupRun: "dedup:run",
+  dedupProgress: "dedup:progress",
   updateCheck: "update:check",
   updateStatus: "update:status",
   crashList: "crash:list",
@@ -26,6 +28,12 @@ export const IPC = {
 
 export interface IntakeProgress {
   phase: "copy" | "probe" | "extract";
+  frames?: number;
+}
+
+export interface DedupProgress {
+  phase: "hash" | "copy";
+  /** Frames hashed so far (during the "hash" phase). */
   frames?: number;
 }
 
@@ -74,6 +82,8 @@ export interface EndoSegApi {
   pickVideo(): Promise<string | null>;
   runIntake(projectId: string, sourcePath: string): Promise<ProjectManifest | null>;
   onIntakeProgress(cb: (p: IntakeProgress) => void): () => void;
+  runDedup(projectId: string): Promise<ProjectManifest | null>;
+  onDedupProgress(cb: (p: DedupProgress) => void): () => void;
   checkForUpdates(): Promise<UpdateStatus>;
   onUpdateStatus(cb: (s: UpdateStatus) => void): () => void;
   listCrashes(): Promise<string[]>;

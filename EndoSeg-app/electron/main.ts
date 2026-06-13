@@ -8,6 +8,7 @@ import {
   type AppInfo,
   type LibraryState,
   type IntakeProgress,
+  type DedupProgress,
   type UpdateStatus,
 } from "../src/shared/ipc.js";
 import {
@@ -17,6 +18,7 @@ import {
   updateStageOnDisk,
 } from "../src/node/library.js";
 import { runIntake } from "../src/node/intake.js";
+import { runDedup } from "../src/node/dedup.js";
 import { setupUpdater, checkForUpdates } from "./updater.js";
 import {
   type Settings,
@@ -188,6 +190,37 @@ function registerIpc(): void {
         nowIso(),
       );
       return updateStageOnDisk(libraryDir, projectId, "intake", { status: "error", error: e.message }, nowIso());
+    }
+  });
+
+  ipcMain.handle(IPC.dedupRun, async (_e, projectId: unknown) => {
+    if (typeof projectId !== "string") return null;
+    if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
+    const send = (p: DedupProgress) => mainWindow?.webContents.send(IPC.dedupProgress, p);
+    try {
+      await updateStageOnDisk(libraryDir, projectId, "dedup", { status: "in_progress" }, nowIso());
+      const result = await runDedup({
+        baseDir: libraryDir,
+        projectId,
+        ffmpegPath: resolveBinary(ffmpegPath),
+        threshold: settings.dedupThreshold,
+        now: nowIso(),
+        onProgress: (frames) => send({ phase: "hash", frames }),
+      });
+      return await updateStageOnDisk(
+        libraryDir,
+        projectId,
+        "dedup",
+        { status: "done", counts: { kept: result.kept, dropped: result.dropped } },
+        nowIso(),
+      );
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      await crashLogger.record(
+        { source: "dedup", message: e.message, detail: e.stack, projectId, stage: "dedup" },
+        nowIso(),
+      );
+      return updateStageOnDisk(libraryDir, projectId, "dedup", { status: "error", error: e.message }, nowIso());
     }
   });
 

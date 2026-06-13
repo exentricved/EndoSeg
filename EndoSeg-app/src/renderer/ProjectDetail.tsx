@@ -5,7 +5,7 @@ import {
   type ProjectManifest,
   type StageId,
 } from "../core/stages.js";
-import type { IntakeProgress } from "../shared/ipc.js";
+import type { IntakeProgress, DedupProgress } from "../shared/ipc.js";
 import { StageBadge, formatTime } from "./ui.js";
 
 const STAGE_HINT: Record<StageId, string> = {
@@ -15,17 +15,22 @@ const STAGE_HINT: Record<StageId, string> = {
   export: "Export a folder of NRRD masks + a packaged project.json.",
 };
 
-const PROGRESS_LABEL: Record<IntakeProgress["phase"], string> = {
+const INTAKE_LABEL: Record<IntakeProgress["phase"], string> = {
   copy: "Copying & hashing video…",
   probe: "Reading video metadata…",
   extract: "Extracting frames…",
 };
 
+const DEDUP_LABEL: Record<DedupProgress["phase"], string> = {
+  hash: "Hashing frames…",
+  copy: "Copying kept frames…",
+};
+
 export function ProjectDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [missing, setMissing] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<IntakeProgress | null>(null);
+  const [running, setRunning] = useState<StageId | null>(null);
+  const [statusLine, setStatusLine] = useState<string | null>(null);
   const unsub = useRef<(() => void) | null>(null);
 
   const load = useCallback(async () => {
@@ -43,17 +48,36 @@ export function ProjectDetail({ id, onBack }: { id: string; onBack: () => void }
   const runIntake = useCallback(async () => {
     const sourcePath = await window.endoseg.pickVideo();
     if (!sourcePath) return;
-    setBusy(true);
-    setProgress({ phase: "copy" });
-    unsub.current = window.endoseg.onIntakeProgress((p) => setProgress(p));
+    setRunning("intake");
+    setStatusLine(INTAKE_LABEL.copy);
+    unsub.current = window.endoseg.onIntakeProgress((p) =>
+      setStatusLine(INTAKE_LABEL[p.phase] + (p.frames != null ? ` (${p.frames} frames)` : "")),
+    );
     try {
       const updated = await window.endoseg.runIntake(id, sourcePath);
       if (updated) setManifest(updated);
     } finally {
       unsub.current?.();
       unsub.current = null;
-      setBusy(false);
-      setProgress(null);
+      setRunning(null);
+      setStatusLine(null);
+    }
+  }, [id]);
+
+  const runDedup = useCallback(async () => {
+    setRunning("dedup");
+    setStatusLine(DEDUP_LABEL.hash);
+    unsub.current = window.endoseg.onDedupProgress((p) =>
+      setStatusLine(DEDUP_LABEL[p.phase] + (p.frames != null ? ` (${p.frames} frames)` : "")),
+    );
+    try {
+      const updated = await window.endoseg.runDedup(id);
+      if (updated) setManifest(updated);
+    } finally {
+      unsub.current?.();
+      unsub.current = null;
+      setRunning(null);
+      setStatusLine(null);
     }
   }, [id]);
 
@@ -66,6 +90,9 @@ export function ProjectDetail({ id, onBack }: { id: string; onBack: () => void }
     );
   }
   if (!manifest) return <main className="detail"><p className="muted">Loading…</p></main>;
+
+  const busy = running !== null;
+  const intakeDone = manifest.stages.intake.status === "done";
 
   return (
     <main className="detail">
@@ -83,7 +110,6 @@ export function ProjectDetail({ id, onBack }: { id: string; onBack: () => void }
       <div className="stage-list">
         {STAGES.map((stage, i) => {
           const st = manifest.stages[stage];
-          const isIntake = stage === "intake";
           return (
             <div key={stage} className={`stage-card status-${st.status}`}>
               <div className="stage-num">{i + 1}</div>
@@ -100,17 +126,22 @@ export function ProjectDetail({ id, onBack }: { id: string; onBack: () => void }
                 </div>
                 {st.error && <div className="stage-error">⚠ {st.error}</div>}
                 <div className="stage-hint muted">{STAGE_HINT[stage]}</div>
-                {isIntake && busy && (
-                  <div className="intake-progress">
-                    {progress ? PROGRESS_LABEL[progress.phase] : "Starting…"}
-                    {progress?.frames != null && ` (${progress.frames} frames)`}
-                  </div>
+                {running === stage && (
+                  <div className="intake-progress">{statusLine ?? "Starting…"}</div>
                 )}
               </div>
               <div className="stage-action">
-                {isIntake ? (
+                {stage === "intake" ? (
                   <button onClick={() => void runIntake()} disabled={busy}>
-                    {busy ? "Working…" : st.status === "done" ? "Re-import…" : "Add video…"}
+                    {running === "intake" ? "Working…" : st.status === "done" ? "Re-import…" : "Add video…"}
+                  </button>
+                ) : stage === "dedup" ? (
+                  <button
+                    onClick={() => void runDedup()}
+                    disabled={busy || !intakeDone}
+                    title={intakeDone ? "" : "Run intake first"}
+                  >
+                    {running === "dedup" ? "Working…" : st.status === "done" ? "Re-run…" : "Run dedup"}
                   </button>
                 ) : (
                   <button disabled title="Coming in a later phase">Run…</button>

@@ -13,12 +13,15 @@ export interface Settings {
   frameSampleEvery: number;
   /** Compute preference for the segmentation pipeline. */
   gpu: GpuMode;
+  /** Max perceptual-hash Hamming distance (0-64) to treat frames as duplicates. */
+  dedupThreshold: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   libraryDir: null,
   frameSampleEvery: 6,
   gpu: "auto",
+  dedupThreshold: 8,
 };
 
 const GPU_MODES: GpuMode[] = ["auto", "cpu", "gpu"];
@@ -49,6 +52,15 @@ export function normalizeSettings(raw: unknown): Settings {
 
   if (typeof raw.gpu === "string" && GPU_MODES.includes(raw.gpu as GpuMode)) {
     out.gpu = raw.gpu as GpuMode;
+  }
+
+  if (
+    typeof raw.dedupThreshold === "number" &&
+    Number.isInteger(raw.dedupThreshold) &&
+    raw.dedupThreshold >= 0 &&
+    raw.dedupThreshold <= 64
+  ) {
+    out.dedupThreshold = raw.dedupThreshold;
   }
 
   return out;

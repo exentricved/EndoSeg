@@ -3,6 +3,7 @@ import {
   IPC,
   type EndoSegApi,
   type IntakeProgress,
+  type DedupProgress,
   type UpdateStatus,
 } from "../src/shared/ipc.js";
 
@@ -23,6 +24,12 @@ const api: EndoSegApi = {
     const listener = (_e: IpcRendererEvent, p: IntakeProgress) => cb(p);
     ipcRenderer.on(IPC.intakeProgress, listener);
     return () => ipcRenderer.removeListener(IPC.intakeProgress, listener);
+  },
+  runDedup: (projectId) => ipcRenderer.invoke(IPC.dedupRun, projectId),
+  onDedupProgress: (cb) => {
+    const listener = (_e: IpcRendererEvent, p: DedupProgress) => cb(p);
+    ipcRenderer.on(IPC.dedupProgress, listener);
+    return () => ipcRenderer.removeListener(IPC.dedupProgress, listener);
   },
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   onUpdateStatus: (cb) => {

@@ -28,16 +28,21 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ libraryDir: "D:/lib" }).libraryDir).toBe("D:/lib");
     expect(normalizeSettings({ libraryDir: "" }).libraryDir).toBeNull();
     expect(normalizeSettings({ libraryDir: null }).libraryDir).toBeNull();
+    expect(normalizeSettings({ dedupThreshold: 12 }).dedupThreshold).toBe(12);
+    expect(normalizeSettings({ dedupThreshold: 0 }).dedupThreshold).toBe(0);
+    expect(normalizeSettings({ dedupThreshold: 65 }).dedupThreshold).toBe(8);
+    expect(normalizeSettings({ dedupThreshold: -1 }).dedupThreshold).toBe(8);
   });
 });
 
 describe("applySettings", () => {
   it("patches only provided fields", () => {
-    const base = { libraryDir: "D:/lib", frameSampleEvery: 6, gpu: "auto" as const };
+    const base = { libraryDir: "D:/lib", frameSampleEvery: 6, gpu: "auto" as const, dedupThreshold: 8 };
     expect(applySettings(base, { frameSampleEvery: 12 })).toEqual({
       libraryDir: "D:/lib",
       frameSampleEvery: 12,
       gpu: "auto",
+      dedupThreshold: 8,
     });
     expect(applySettings(base, { gpu: "bad" })).toEqual({ ...base, gpu: "auto" });
   });
@@ -58,8 +63,13 @@ describe("loadSettings / saveSettings", () => {
 
   it("round-trips saved settings", async () => {
     const file = path.join(dir, "settings.json");
-    await saveSettings(file, { libraryDir: "D:/x", frameSampleEvery: 8, gpu: "gpu" });
-    expect(await loadSettings(file)).toEqual({ libraryDir: "D:/x", frameSampleEvery: 8, gpu: "gpu" });
+    await saveSettings(file, { libraryDir: "D:/x", frameSampleEvery: 8, gpu: "gpu", dedupThreshold: 10 });
+    expect(await loadSettings(file)).toEqual({
+      libraryDir: "D:/x",
+      frameSampleEvery: 8,
+      gpu: "gpu",
+      dedupThreshold: 10,
+    });
   });
 
   it("recovers defaults from a corrupt file", async () => {

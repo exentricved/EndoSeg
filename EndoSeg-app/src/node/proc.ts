@@ -7,6 +7,38 @@ export interface RunResult {
   stderr: string;
 }
 
+export interface BinaryResult {
+  code: number;
+  stdout: Buffer;
+  stderr: string;
+}
+
+/** Like run(), but captures stdout as raw bytes (for rawvideo pixel output). */
+export function runBinary(cmd: string, args: string[], opts: RunOptions = {}): Promise<BinaryResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { windowsHide: true });
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    let buf = "";
+    child.stdout.on("data", (d: Buffer) => chunks.push(d));
+    child.stderr.on("data", (d) => {
+      const s = d.toString();
+      stderr += s;
+      if (opts.onStderrLine) {
+        buf += s;
+        const parts = buf.split(/[\r\n]/);
+        buf = parts.pop() ?? "";
+        for (const line of parts) if (line.trim()) opts.onStderrLine(line.trim());
+      }
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (opts.onStderrLine && buf.trim()) opts.onStderrLine(buf.trim());
+      resolve({ code: code ?? -1, stdout: Buffer.concat(chunks), stderr });
+    });
+  });
+}
+
 export interface RunOptions {
   /** Called for each complete stderr line (ffmpeg writes progress to stderr). */
   onStderrLine?: (line: string) => void;
