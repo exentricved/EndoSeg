@@ -221,15 +221,34 @@ A non-technical user must be able to open, read, and copy/paste a crash report.
 
 ---
 
-## 8. Packaging & installer
+## 8. Packaging, installer & updates
 
 - **electron-builder**, Windows NSIS installer first (`.exe`); macOS/Linux later if needed.
-- Ship the prebuilt Vite renderer (`vite build` output) + main-process bundle.
+  Config in `EndoSeg-app/electron-builder.yml`. Creates Start-Menu + desktop shortcuts
+  (the installed-app "launcher") and offers run-after-finish.
+- Ship the prebuilt Vite renderer (`vite build` output) + main-process bundle. Bundled
+  ffmpeg/ffprobe are `asarUnpack`ed so their binaries stay executable.
 - **First-run Python provisioning** step (creates venv, installs pinned requirements,
   downloads model weights) with a progress screen and a retry/offline-bundle path.
+  *(Deferred to Phase 4 — segmentation. Intake/dedup use bundled ffmpeg, no Python.)*
 - App identity: product name **EndoSeg**, its own icon, versioned releases.
-- Note (env): on this machine Node is at `C:\Program Files\nodejs` and not on PATH — call
-  `npm.cmd` directly when scripting builds.
+
+### Auto-update (push updates)
+
+- **electron-updater** in the app + **GitHub Releases** as the publish target.
+- Flow: bump `version` in `package.json` → `npm run release` builds and publishes the
+  installer + `latest.yml` to a GitHub Release → the installed app's **Settings →
+  Updates → "Check for updates"** finds it, downloads in the background, and installs on
+  restart. (Auto-checks only run in the installed build; in dev it reports "disabled".)
+- Requires a GitHub repo + `GH_TOKEN`; set `owner`/`repo` in `electron-builder.yml`
+  (currently a `YOUR_GITHUB_USERNAME` placeholder).
+
+### Build / dev notes (env)
+
+- On this machine Node is at `C:\Program Files\nodejs` and not on PATH — call `npm.cmd`
+  directly when scripting builds. `Launch EndoSeg (dev).cmd` is a double-click dev launcher.
+- The whole project (EndoSeg-app + pulse-v3-ercp + spec) is now one git repo at the
+  `Sphincter Segmentation` root.
 
 ---
 
