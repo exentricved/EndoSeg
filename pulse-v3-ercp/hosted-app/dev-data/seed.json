@@ -1,0 +1,589 @@
+{
+  "schemaVersion": 5,
+  "seedVersion": 5,
+  "users": [
+    {
+      "id": "user_admin_1",
+      "email": "admin@annotateeus.local",
+      "displayName": "Admin Demo",
+      "primaryRole": "admin",
+      "status": "active",
+      "createdAt": "2026-03-26T09:00:00.000Z"
+    },
+    {
+      "id": "user_reviewer_1",
+      "email": "reviewer1@annotateeus.local",
+      "displayName": "Reviewer One",
+      "primaryRole": "reviewer",
+      "status": "active",
+      "createdAt": "2026-03-26T09:00:00.000Z"
+    },
+    {
+      "id": "user_reviewer_2",
+      "email": "reviewer2@annotateeus.local",
+      "displayName": "Reviewer Two",
+      "primaryRole": "reviewer",
+      "status": "active",
+      "createdAt": "2026-03-26T09:00:00.000Z"
+    },
+    {
+      "id": "user_reviewer_disabled_1",
+      "email": "reviewer.retired@annotateeus.local",
+      "displayName": "Reviewer Retired",
+      "primaryRole": "reviewer",
+      "status": "disabled",
+      "createdAt": "2026-03-20T09:00:00.000Z"
+    },
+    {
+      "id": "user_adjudicator_1",
+      "email": "adjudicator@annotateeus.local",
+      "displayName": "Adjudicator Demo",
+      "primaryRole": "adjudicator",
+      "status": "active",
+      "createdAt": "2026-03-26T09:00:00.000Z"
+    }
+  ],
+  "casePackages": [
+    {
+      "id": "pkg_case_liv_001",
+      "caseId": "case_liv_001",
+      "uploadFilename": "case_liv_001_package.zip",
+      "manifestStorageKey": "cases/case_liv_001/manifest.json",
+      "originalUploadStorageKey": "cases/case_liv_001/package/case_liv_001_package.zip",
+      "intakeStatus": "ready",
+      "uploadedAt": "2026-03-26T10:00:00.000Z",
+      "processedAt": "2026-03-26T10:01:00.000Z"
+    },
+    {
+      "id": "pkg_case_liv_002",
+      "caseId": "case_liv_002",
+      "uploadFilename": "case_liv_002_package.zip",
+      "manifestStorageKey": "cases/case_liv_002/manifest.json",
+      "originalUploadStorageKey": "cases/case_liv_002/package/case_liv_002_package.zip",
+      "intakeStatus": "ready",
+      "uploadedAt": "2026-03-26T10:15:00.000Z",
+      "processedAt": "2026-03-26T10:16:00.000Z"
+    },
+    {
+      "id": "pkg_case_liv_003",
+      "caseId": "case_liv_003",
+      "uploadFilename": "case_liv_003_package.zip",
+      "manifestStorageKey": "cases/case_liv_003/manifest.json",
+      "originalUploadStorageKey": "cases/case_liv_003/package/case_liv_003_package.zip",
+      "intakeStatus": "ready",
+      "uploadedAt": "2026-03-26T10:25:00.000Z",
+      "processedAt": "2026-03-26T10:26:00.000Z"
+    },
+    {
+      "id": "pkg_case_liv_004",
+      "caseId": "case_liv_004",
+      "uploadFilename": "case_liv_004_package.zip",
+      "manifestStorageKey": "cases/case_liv_004/manifest.json",
+      "originalUploadStorageKey": "cases/case_liv_004/package/case_liv_004_package.zip",
+      "intakeStatus": "ready",
+      "uploadedAt": "2026-03-26T10:40:00.000Z",
+      "processedAt": "2026-03-26T10:41:00.000Z"
+    }
+  ],
+  "cases": [
+    {
+      "id": "case_liv_001",
+      "displayCaseId": "CASE-LIV-001",
+      "externalCaseId": "study-alpha-001",
+      "status": "ready_for_assignment",
+      "currentStage": "review_1",
+      "priority": "routine",
+      "uploadedByUserId": "user_admin_1",
+      "createdAt": "2026-03-26T10:00:00.000Z",
+      "completedAt": null,
+      "metadata": {
+        "summary": "Fresh intake case awaiting Admin chain definition",
+        "manifestStorageKey": "cases/case_liv_001/manifest.json",
+        "intakeStatus": "ready",
+        "packageFilename": "case_liv_001_package.zip"
+      }
+    },
+    {
+      "id": "case_liv_002",
+      "displayCaseId": "CASE-LIV-002",
+      "externalCaseId": "study-alpha-002",
+      "status": "assigned_to_r1",
+      "currentStage": "review_1",
+      "priority": "priority",
+      "uploadedByUserId": "user_admin_1",
+      "createdAt": "2026-03-26T10:15:00.000Z",
+      "completedAt": null,
+      "metadata": {
+        "summary": "Chain defined and assigned to Reviewer One",
+        "manifestStorageKey": "cases/case_liv_002/manifest.json",
+        "intakeStatus": "ready",
+        "packageFilename": "case_liv_002_package.zip"
+      }
+    },
+    {
+      "id": "case_liv_003",
+      "displayCaseId": "CASE-LIV-003",
+      "externalCaseId": "study-alpha-003",
+      "status": "in_review_r1",
+      "currentStage": "review_1",
+      "priority": "urgent",
+      "uploadedByUserId": "user_admin_1",
+      "createdAt": "2026-03-26T10:25:00.000Z",
+      "completedAt": null,
+      "metadata": {
+        "summary": "Active Reviewer One work item",
+        "manifestStorageKey": "cases/case_liv_003/manifest.json",
+        "intakeStatus": "ready",
+        "packageFilename": "case_liv_003_package.zip"
+      }
+    },
+    {
+      "id": "case_liv_004",
+      "displayCaseId": "CASE-LIV-004",
+      "externalCaseId": "study-alpha-004",
+      "status": "assigned_to_r2",
+      "currentStage": "review_2",
+      "priority": "routine",
+      "uploadedByUserId": "user_admin_1",
+      "createdAt": "2026-03-26T10:40:00.000Z",
+      "completedAt": null,
+      "metadata": {
+        "summary": "Reviewer Two queue item with shared case discussion history",
+        "manifestStorageKey": "cases/case_liv_004/manifest.json",
+        "intakeStatus": "ready",
+        "packageFilename": "case_liv_004_package.zip"
+      }
+    }
+  ],
+  "caseAssets": [
+    {
+      "id": "asset_001_01",
+      "caseId": "case_liv_001",
+      "frameIndex": 1,
+      "sourceName": "frame_001.png",
+      "storageKey": "cases/case_liv_001/frames/frame_001.png",
+      "width": 1280,
+      "height": 720,
+      "checksumSha256": "sha256-case-liv-001-01"
+    },
+    {
+      "id": "asset_001_02",
+      "caseId": "case_liv_001",
+      "frameIndex": 2,
+      "sourceName": "frame_002.png",
+      "storageKey": "cases/case_liv_001/frames/frame_002.png",
+      "width": 1280,
+      "height": 720,
+      "checksumSha256": "sha256-case-liv-001-02"
+    },
+    {
+      "id": "asset_002_01",
+      "caseId": "case_liv_002",
+      "frameIndex": 1,
+      "sourceName": "frame_001.png",
+      "storageKey": "cases/case_liv_002/frames/frame_001.png",
+      "width": 1280,
+      "height": 720,
+      "checksumSha256": "sha256-case-liv-002-01"
+    },
+    {
+      "id": "asset_002_02",
+      "caseId": "case_liv_002",
+      "frameIndex": 2,
+      "sourceName": "frame_002.png",
+      "storageKey": "cases/case_liv_002/frames/frame_002.png",
+      "width": 1280,
+      "height": 720,
+      "checksumSha256": "sha256-case-liv-002-02"
+    },
+    {
+      "id": "asset_003_01",
+      "caseId": "case_liv_003",
+      "frameIndex": 1,
+      "sourceName": "frame_001.png",
+      "storageKey": "cases/case_liv_003/frames/frame_001.png",
+      "width": 1280,
+      "height": 720,
+      "checksumSha256": "sha256-case-liv-003-01"
+    },
+    {
+      "id": "asset_004_01",
+      "caseId": "case_liv_004",
+      "frameIndex": 1,
+      "sourceName": "frame_001.png",
+      "storageKey": "cases/case_liv_004/frames/frame_001.png",
+      "width": 1280,
+      "height": 720,
+      "checksumSha256": "sha256-case-liv-004-01"
+    }
+  ],
+  "caseReferences": [
+    {
+      "id": "reference_case_liv_001_text",
+      "caseId": "case_liv_001",
+      "title": "Reference note",
+      "referenceKind": "text",
+      "sourceName": "reference.txt",
+      "storageKey": null,
+      "mimeType": "text/plain; charset=utf-8",
+      "textContent": "Patient history: prior biliary intervention. Review the left-lobe sweep carefully before annotation.",
+      "createdAt": "2026-03-26T10:01:30.000Z"
+    },
+    {
+      "id": "reference_case_liv_002_json",
+      "caseId": "case_liv_002",
+      "title": "Structured reference",
+      "referenceKind": "json",
+      "sourceName": "reference.json",
+      "storageKey": null,
+      "mimeType": "application/json",
+      "textContent": "{\n  \"stationHint\": \"TG\",\n  \"notes\": [\"Portal vein branch visibility expected\", \"Gallbladder may appear transiently\"]\n}",
+      "createdAt": "2026-03-26T10:16:45.000Z"
+    },
+    {
+      "id": "reference_case_liv_003_pdf",
+      "caseId": "case_liv_003",
+      "title": "Reviewer report PDF",
+      "referenceKind": "pdf",
+      "sourceName": "review_report.pdf",
+      "storageKey": "cases/case_liv_003/references/review_report.pdf",
+      "mimeType": "application/pdf",
+      "textContent": null,
+      "createdAt": "2026-03-26T10:26:10.000Z"
+    },
+    {
+      "id": "reference_case_liv_004_image",
+      "caseId": "case_liv_004",
+      "title": "Reference still",
+      "referenceKind": "image",
+      "sourceName": "reference_still.png",
+      "storageKey": "cases/case_liv_004/references/reference_still.png",
+      "mimeType": "image/png",
+      "textContent": null,
+      "createdAt": "2026-03-26T10:41:30.000Z"
+    },
+    {
+      "id": "reference_case_liv_004_pdf",
+      "caseId": "case_liv_004",
+      "title": "Reviewer report PDF",
+      "referenceKind": "pdf",
+      "sourceName": "review_report.pdf",
+      "storageKey": "cases/case_liv_004/references/review_report.pdf",
+      "mimeType": "application/pdf",
+      "textContent": null,
+      "createdAt": "2026-03-26T10:41:15.000Z"
+    }
+  ],
+  "workflowChains": [
+    {
+      "id": "chain_case_liv_002_review_1",
+      "caseId": "case_liv_002",
+      "position": 1,
+      "reviewStage": "review_1",
+      "assignedReviewerUserId": "user_reviewer_1",
+      "assignmentMode": "manual",
+      "status": "active",
+      "createdAt": "2026-03-26T10:16:30.000Z",
+      "updatedAt": "2026-03-26T10:16:30.000Z"
+    },
+    {
+      "id": "chain_case_liv_002_review_2",
+      "caseId": "case_liv_002",
+      "position": 2,
+      "reviewStage": "review_2",
+      "assignedReviewerUserId": "user_reviewer_2",
+      "assignmentMode": "manual",
+      "status": "planned",
+      "createdAt": "2026-03-26T10:16:30.000Z",
+      "updatedAt": "2026-03-26T10:16:30.000Z"
+    },
+    {
+      "id": "chain_case_liv_003_review_1",
+      "caseId": "case_liv_003",
+      "position": 1,
+      "reviewStage": "review_1",
+      "assignedReviewerUserId": "user_reviewer_1",
+      "assignmentMode": "manual",
+      "status": "active",
+      "createdAt": "2026-03-26T10:26:30.000Z",
+      "updatedAt": "2026-03-26T10:30:00.000Z"
+    },
+    {
+      "id": "chain_case_liv_003_review_2",
+      "caseId": "case_liv_003",
+      "position": 2,
+      "reviewStage": "review_2",
+      "assignedReviewerUserId": "user_reviewer_2",
+      "assignmentMode": "manual",
+      "status": "planned",
+      "createdAt": "2026-03-26T10:26:30.000Z",
+      "updatedAt": "2026-03-26T10:26:30.000Z"
+    },
+    {
+      "id": "chain_case_liv_004_review_1",
+      "caseId": "case_liv_004",
+      "position": 1,
+      "reviewStage": "review_1",
+      "assignedReviewerUserId": "user_reviewer_disabled_1",
+      "assignmentMode": "manual",
+      "status": "completed",
+      "createdAt": "2026-03-26T10:41:00.000Z",
+      "updatedAt": "2026-03-26T10:45:00.000Z"
+    },
+    {
+      "id": "chain_case_liv_004_review_2",
+      "caseId": "case_liv_004",
+      "position": 2,
+      "reviewStage": "review_2",
+      "assignedReviewerUserId": "user_reviewer_2",
+      "assignmentMode": "manual",
+      "status": "active",
+      "createdAt": "2026-03-26T10:41:00.000Z",
+      "updatedAt": "2026-03-26T10:45:00.000Z"
+    }
+  ],
+  "assignments": [
+    {
+      "id": "assignment_review_1_case_liv_002",
+      "caseId": "case_liv_002",
+      "reviewStage": "review_1",
+      "assignedToUserId": "user_reviewer_1",
+      "status": "assigned",
+      "assignedAt": "2026-03-26T10:17:00.000Z",
+      "startedAt": null,
+      "submittedAt": null,
+      "previousAssignmentId": null
+    },
+    {
+      "id": "assignment_review_1_case_liv_003",
+      "caseId": "case_liv_003",
+      "reviewStage": "review_1",
+      "assignedToUserId": "user_reviewer_1",
+      "status": "in_progress",
+      "assignedAt": "2026-03-26T10:27:00.000Z",
+      "startedAt": "2026-03-26T10:30:00.000Z",
+      "submittedAt": null,
+      "previousAssignmentId": null
+    },
+    {
+      "id": "assignment_review_1_case_liv_004",
+      "caseId": "case_liv_004",
+      "reviewStage": "review_1",
+      "assignedToUserId": "user_reviewer_disabled_1",
+      "status": "submitted",
+      "assignedAt": "2026-03-26T10:41:30.000Z",
+      "startedAt": "2026-03-26T10:42:00.000Z",
+      "submittedAt": "2026-03-26T10:44:00.000Z",
+      "previousAssignmentId": null
+    },
+    {
+      "id": "assignment_review_2_case_liv_004",
+      "caseId": "case_liv_004",
+      "reviewStage": "review_2",
+      "assignedToUserId": "user_reviewer_2",
+      "status": "assigned",
+      "assignedAt": "2026-03-26T10:45:00.000Z",
+      "startedAt": null,
+      "submittedAt": null,
+      "previousAssignmentId": "assignment_review_1_case_liv_004"
+    }
+  ],
+  "submissions": [
+    {
+      "id": "submission_review_1_case_liv_004",
+      "caseId": "case_liv_004",
+      "assignmentId": "assignment_review_1_case_liv_004",
+      "submittedByUserId": "user_reviewer_disabled_1",
+      "submissionType": "final_stage_submission",
+      "leusStorageKey": "cases/case_liv_004/assignments/assignment_review_1_case_liv_004/submissions/submission_review_1_case_liv_004.leus",
+      "submittedAt": "2026-03-26T10:44:00.000Z",
+      "isFinalForStage": true
+    }
+  ],
+  "commentThreads": [
+    {
+      "id": "thread_case_discussion_case_liv_003",
+      "caseId": "case_liv_003",
+      "assignmentId": null,
+      "threadType": "case_discussion",
+      "visibilityScope": "case_admin_and_assigned_reviewers",
+      "createdByUserId": "user_admin_1",
+      "createdByDisplayName": "Admin Demo",
+      "createdByEmail": "admin@annotateeus.local",
+      "createdAt": "2026-03-26T10:29:00.000Z",
+      "updatedAt": "2026-03-26T10:34:00.000Z",
+      "status": "open",
+      "resolvedAt": null,
+      "resolvedByUserId": null
+    },
+    {
+      "id": "thread_case_discussion_case_liv_004",
+      "caseId": "case_liv_004",
+      "assignmentId": null,
+      "threadType": "case_discussion",
+      "visibilityScope": "case_admin_and_assigned_reviewers",
+      "createdByUserId": "user_admin_1",
+      "createdByDisplayName": "Admin Demo",
+      "createdByEmail": "admin@annotateeus.local",
+      "createdAt": "2026-03-26T10:45:15.000Z",
+      "updatedAt": "2026-03-26T10:46:30.000Z",
+      "status": "open",
+      "resolvedAt": null,
+      "resolvedByUserId": null
+    },
+    {
+      "id": "thread_assignment_case_liv_003_review_1",
+      "caseId": "case_liv_003",
+      "assignmentId": "assignment_review_1_case_liv_003",
+      "threadType": "assignment_clarification",
+      "visibilityScope": "assignment_admin_and_assignee",
+      "createdByUserId": "user_reviewer_1",
+      "createdByDisplayName": "Reviewer One",
+      "createdByEmail": "reviewer1@annotateeus.local",
+      "createdAt": "2026-03-26T10:31:00.000Z",
+      "updatedAt": "2026-03-26T10:33:00.000Z",
+      "status": "open",
+      "resolvedAt": null,
+      "resolvedByUserId": null
+    },
+    {
+      "id": "thread_assignment_case_liv_004_review_1",
+      "caseId": "case_liv_004",
+      "assignmentId": "assignment_review_1_case_liv_004",
+      "threadType": "assignment_clarification",
+      "visibilityScope": "assignment_admin_and_assignee",
+      "createdByUserId": "user_reviewer_disabled_1",
+      "createdByDisplayName": "Reviewer Retired",
+      "createdByEmail": "reviewer.retired@annotateeus.local",
+      "createdAt": "2026-03-26T10:42:30.000Z",
+      "updatedAt": "2026-03-26T10:43:00.000Z",
+      "status": "open",
+      "resolvedAt": null,
+      "resolvedByUserId": null
+    },
+    {
+      "id": "thread_assignment_case_liv_004_review_2",
+      "caseId": "case_liv_004",
+      "assignmentId": "assignment_review_2_case_liv_004",
+      "threadType": "assignment_clarification",
+      "visibilityScope": "assignment_admin_and_assignee",
+      "createdByUserId": "user_admin_1",
+      "createdByDisplayName": "Admin Demo",
+      "createdByEmail": "admin@annotateeus.local",
+      "createdAt": "2026-03-26T10:45:30.000Z",
+      "updatedAt": "2026-03-26T10:45:30.000Z",
+      "status": "open",
+      "resolvedAt": null,
+      "resolvedByUserId": null
+    },
+    {
+      "id": "thread_admin_notes_case_liv_004",
+      "caseId": "case_liv_004",
+      "assignmentId": null,
+      "threadType": "admin_internal_note",
+      "visibilityScope": "admin_only",
+      "createdByUserId": "user_admin_1",
+      "createdByDisplayName": "Admin Demo",
+      "createdByEmail": "admin@annotateeus.local",
+      "createdAt": "2026-03-26T10:40:30.000Z",
+      "updatedAt": "2026-03-26T10:46:00.000Z",
+      "status": "open",
+      "resolvedAt": null,
+      "resolvedByUserId": null
+    }
+  ],
+  "comments": [
+    {
+      "id": "comment_case_liv_003_shared_01",
+      "threadId": "thread_case_discussion_case_liv_003",
+      "caseId": "case_liv_003",
+      "assignmentId": null,
+      "authorUserId": "user_admin_1",
+      "authorDisplayName": "Admin Demo",
+      "authorEmail": "admin@annotateeus.local",
+      "visibilityScope": "case_admin_and_assigned_reviewers",
+      "body": "Use this shared case discussion for workflow questions and annotation clarifications. Older stage-specific notes remain preserved below as legacy history.",
+      "createdAt": "2026-03-26T10:29:00.000Z",
+      "updatedAt": null
+    },
+    {
+      "id": "comment_case_liv_003_r1_01",
+      "threadId": "thread_assignment_case_liv_003_review_1",
+      "caseId": "case_liv_003",
+      "assignmentId": "assignment_review_1_case_liv_003",
+      "authorUserId": "user_reviewer_1",
+      "authorDisplayName": "Reviewer One",
+      "authorEmail": "reviewer1@annotateeus.local",
+      "visibilityScope": "assignment_admin_and_assignee",
+      "body": "Portal vein branching is faint on frame 1. Confirming that the expected scope still includes transient gallbladder appearance if visible.",
+      "createdAt": "2026-03-26T10:31:00.000Z",
+      "updatedAt": null
+    },
+    {
+      "id": "comment_case_liv_003_r1_02",
+      "threadId": "thread_assignment_case_liv_003_review_1",
+      "caseId": "case_liv_003",
+      "assignmentId": "assignment_review_1_case_liv_003",
+      "authorUserId": "user_admin_1",
+      "authorDisplayName": "Admin Demo",
+      "authorEmail": "admin@annotateeus.local",
+      "visibilityScope": "assignment_admin_and_assignee",
+      "body": "Yes. If the gallbladder is visible in the frame sequence, include it using the current 9-label set.",
+      "createdAt": "2026-03-26T10:33:00.000Z",
+      "updatedAt": null
+    },
+    {
+      "id": "comment_case_liv_004_r1_01",
+      "threadId": "thread_assignment_case_liv_004_review_1",
+      "caseId": "case_liv_004",
+      "assignmentId": "assignment_review_1_case_liv_004",
+      "authorUserId": "user_reviewer_disabled_1",
+      "authorDisplayName": "Reviewer Retired",
+      "authorEmail": "reviewer.retired@annotateeus.local",
+      "visibilityScope": "assignment_admin_and_assignee",
+      "body": "Stage 1 completed. Visibility was limited but the portal trunk and right branch were distinguishable.",
+      "createdAt": "2026-03-26T10:42:30.000Z",
+      "updatedAt": null
+    },
+    {
+      "id": "comment_case_liv_004_shared_01",
+      "threadId": "thread_case_discussion_case_liv_004",
+      "caseId": "case_liv_004",
+      "assignmentId": null,
+      "authorUserId": "user_admin_1",
+      "authorDisplayName": "Admin Demo",
+      "authorEmail": "admin@annotateeus.local",
+      "visibilityScope": "case_admin_and_assigned_reviewers",
+      "body": "Shared discussion is now the primary collaboration channel for this case. Legacy assignment-thread comments are retained for audit history.",
+      "createdAt": "2026-03-26T10:45:15.000Z",
+      "updatedAt": null
+    },
+    {
+      "id": "comment_case_liv_004_shared_02",
+      "threadId": "thread_case_discussion_case_liv_004",
+      "caseId": "case_liv_004",
+      "assignmentId": null,
+      "authorUserId": "user_reviewer_2",
+      "authorDisplayName": "Reviewer Two",
+      "authorEmail": "reviewer2@annotateeus.local",
+      "visibilityScope": "case_admin_and_assigned_reviewers",
+      "body": "Opening the second-stage review workspace now. I will use this thread for questions instead of the older private assignment thread.",
+      "createdAt": "2026-03-26T10:46:30.000Z",
+      "updatedAt": null
+    },
+    {
+      "id": "comment_case_liv_004_admin_note_01",
+      "threadId": "thread_admin_notes_case_liv_004",
+      "caseId": "case_liv_004",
+      "assignmentId": null,
+      "authorUserId": "user_admin_1",
+      "authorDisplayName": "Admin Demo",
+      "authorEmail": "admin@annotateeus.local",
+      "visibilityScope": "admin_only",
+      "body": "Historical Reviewer 1 assignment belongs to a disabled account. Keep visible for audit history, but do not reuse for new chain assignment.",
+      "createdAt": "2026-03-26T10:46:00.000Z",
+      "updatedAt": null
+    }
+  ],
+  "auditEvents": []
+}

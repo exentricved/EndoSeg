@@ -1,0 +1,20 @@
+# Dependencies & build output
+node_modules/
+dist/
+dist-electron/
+release/
+build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+
+# EndoSeg local data (never commit patient data)
+EndoSeg Library/
