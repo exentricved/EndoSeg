@@ -26,7 +26,15 @@ const DEDUP_LABEL: Record<DedupProgress["phase"], string> = {
   copy: "Copying kept frames…",
 };
 
-export function ProjectDetail({ id, onBack }: { id: string; onBack: () => void }) {
+export function ProjectDetail({
+  id,
+  onBack,
+  onOpenAnnotator,
+}: {
+  id: string;
+  onBack: () => void;
+  onOpenAnnotator: (id: string) => void;
+}) {
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [missing, setMissing] = useState(false);
   const [running, setRunning] = useState<StageId | null>(null);
@@ -142,6 +150,14 @@ export function ProjectDetail({ id, onBack }: { id: string; onBack: () => void }
                     title={intakeDone ? "" : "Run intake first"}
                   >
                     {running === "dedup" ? "Working…" : st.status === "done" ? "Re-run…" : "Run dedup"}
+                  </button>
+                ) : stage === "segmentation" ? (
+                  <button
+                    onClick={() => onOpenAnnotator(id)}
+                    disabled={busy}
+                    title="Open the annotator (Phase 1: load frames manually; auto-load from intake comes next)"
+                  >
+                    Open annotator
                   </button>
                 ) : (
                   <button disabled title="Coming in a later phase">Run…</button>

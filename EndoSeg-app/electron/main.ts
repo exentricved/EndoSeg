@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from "electron";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import ffmpegPath from "ffmpeg-static";
@@ -19,6 +19,12 @@ import {
 } from "../src/node/library.js";
 import { runIntake } from "../src/node/intake.js";
 import { runDedup } from "../src/node/dedup.js";
+import {
+  listSegFrames,
+  loadSegmentationSnapshot,
+  saveSegmentationSnapshot,
+  resolveFramePath,
+} from "../src/node/segmentation.js";
 import { setupUpdater, checkForUpdates } from "./updater.js";
 import {
   type Settings,
@@ -31,7 +37,18 @@ import { CrashLogger } from "../src/node/crashlog.js";
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 const DEV_URL = process.env.VITE_DEV_SERVER_URL ?? "http://localhost:5234";
 
+// Privileged scheme that streams a project's frames to the renderer on demand
+// (lazy — avoids base64-loading thousands of full-res frames). Must be declared
+// before app "ready".
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "endoseg-frame",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+  },
+]);
+
 let mainWindow: BrowserWindow | null = null;
+let frameServeCount = 0;
 let crashLogger: CrashLogger;
 let settings: Settings;
 let libraryDir = "";
@@ -224,6 +241,38 @@ function registerIpc(): void {
     }
   });
 
+  ipcMain.handle(IPC.segListFrames, async (_e, projectId: unknown) => {
+    if (typeof projectId !== "string") return { source: "none", frames: [] };
+    const r = await listSegFrames(libraryDir, projectId);
+    console.log(`[seg] listFrames project=${projectId} source=${r.source} count=${r.frames.length}`);
+    return r;
+  });
+
+  ipcMain.handle(IPC.segLoad, (_e, projectId: unknown) =>
+    typeof projectId === "string" ? loadSegmentationSnapshot(libraryDir, projectId) : null,
+  );
+
+  ipcMain.handle(IPC.segSave, async (_e, projectId: unknown, snapshot: unknown) => {
+    if (typeof projectId !== "string") return null;
+    try {
+      const { frameCount, maskCount } = await saveSegmentationSnapshot(libraryDir, projectId, snapshot);
+      return await updateStageOnDisk(
+        libraryDir,
+        projectId,
+        "segmentation",
+        { status: "done", counts: { frames: frameCount, masks: maskCount } },
+        nowIso(),
+      );
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      await crashLogger.record(
+        { source: "segmentation", message: e.message, detail: e.stack, projectId, stage: "segmentation" },
+        nowIso(),
+      );
+      return updateStageOnDisk(libraryDir, projectId, "segmentation", { status: "error", error: e.message }, nowIso());
+    }
+  });
+
   ipcMain.handle(IPC.updateCheck, (): Promise<UpdateStatus> => checkForUpdates(app.isPackaged));
 
   ipcMain.handle(IPC.crashList, () => crashLogger.list());
@@ -275,6 +324,20 @@ function createWindow(): void {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  // DEV-ONLY: periodically snapshot the window so issues can be diagnosed headlessly.
+  if (isDev && process.env.ENDOSEG_CAPTURE) {
+    const capPath = path.join(app.getPath("temp"), "endoseg-capture.png");
+    setInterval(() => {
+      void (async () => {
+        try {
+          const img = await mainWindow?.webContents.capturePage();
+          if (img) await fs.writeFile(capPath, img.toPNG());
+        } catch { /* ignore */ }
+      })();
+    }, 2500);
+    console.log(`[capture] writing window snapshots to ${capPath}`);
+  }
 }
 
 app.whenReady().then(async () => {
@@ -288,6 +351,31 @@ app.whenReady().then(async () => {
   settings = await loadSettings(settingsPath());
   libraryDir = resolveLibraryDir();
   await ensureLibrary(libraryDir);
+
+  // Serve project frames over endoseg-frame://frame/<projectId>/<source>/<file>.
+  protocol.handle("endoseg-frame", async (req) => {
+    try {
+      const u = new URL(req.url);
+      const parts = u.pathname.split("/").filter(Boolean).map((p) => decodeURIComponent(p));
+      const [projectId, source, filename] = parts;
+      const abs = resolveFramePath(libraryDir, projectId, source, filename);
+      if (!abs) {
+        console.warn(`[seg] frame 404 (bad path) ${req.url}`);
+        return new Response("not found", { status: 404 });
+      }
+      const data = await fs.readFile(abs);
+      frameServeCount += 1;
+      if (frameServeCount <= 3 || frameServeCount % 25 === 0) {
+        console.log(`[seg] frame served #${frameServeCount} ${filename} (${data.length} bytes)`);
+      }
+      return new Response(new Uint8Array(data), {
+        headers: { "Content-Type": "image/png", "Access-Control-Allow-Origin": "*" },
+      });
+    } catch (err) {
+      console.error(`[seg] frame error ${req.url}:`, err instanceof Error ? err.message : err);
+      return new Response("error", { status: 500 });
+    }
+  });
 
   registerIpc();
   setupUpdater((s) => mainWindow?.webContents.send(IPC.updateStatus, s));

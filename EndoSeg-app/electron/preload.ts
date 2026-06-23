@@ -31,6 +31,9 @@ const api: EndoSegApi = {
     ipcRenderer.on(IPC.dedupProgress, listener);
     return () => ipcRenderer.removeListener(IPC.dedupProgress, listener);
   },
+  listSegFrames: (projectId) => ipcRenderer.invoke(IPC.segListFrames, projectId),
+  loadSegmentation: (projectId) => ipcRenderer.invoke(IPC.segLoad, projectId),
+  saveSegmentation: (projectId, snapshot) => ipcRenderer.invoke(IPC.segSave, projectId, snapshot),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   onUpdateStatus: (cb) => {
     const listener = (_e: IpcRendererEvent, s: UpdateStatus) => cb(s);

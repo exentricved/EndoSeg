@@ -7,12 +7,14 @@ import { CrashLogView } from "./CrashLogView.js";
 import { SettingsView } from "./SettingsView.js";
 import { ProjectDetail } from "./ProjectDetail.js";
 import { StageBadge, formatTime } from "./ui.js";
+import { SegmentationView } from "./SegmentationView.js";
 
 type View =
   | { kind: "hub" }
   | { kind: "crashlog" }
   | { kind: "settings" }
-  | { kind: "project"; id: string };
+  | { kind: "project"; id: string }
+  | { kind: "annotator"; id: string };
 
 export function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -44,11 +46,57 @@ export function App() {
     setView({ kind: "project", id });
   }, [newName, refresh]);
 
+  // Annotator runs as a full-window view with its own toolbar/sidebar.
+  // EndoSeg adds only a thin back bar above it.
+  if (view.kind === "annotator") {
+    const projectId = view.id;
+    const goBack = () => {
+      void refresh();
+      setView({ kind: "project", id: projectId });
+    };
+    return (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          display: "flex",
+          flexDirection: "column",
+          background: "#0d1520",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "6px 12px",
+            borderBottom: "1px solid #1e2d40",
+            color: "#e4e9f0",
+            flexShrink: 0,
+          }}
+        >
+          <button className="secondary" onClick={goBack}>
+            {"←"} Back to project
+          </button>
+          <strong>Annotator</strong>
+          <span className="muted" style={{ fontSize: 12 }}>
+            {projectId}
+          </span>
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <SegmentationView projectId={projectId} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="logo" aria-hidden>👁</span>
+          <span className="logo" aria-hidden>
+            {"👁"}
+          </span>
           <span className="brand-name">EndoSeg</span>
           <span className="version">{info ? `v${info.version}` : ""}</span>
         </div>
@@ -59,10 +107,16 @@ export function App() {
           >
             Projects
           </button>
-          <button className={view.kind === "settings" ? "active" : ""} onClick={() => setView({ kind: "settings" })}>
+          <button
+            className={view.kind === "settings" ? "active" : ""}
+            onClick={() => setView({ kind: "settings" })}
+          >
             Settings
           </button>
-          <button className={view.kind === "crashlog" ? "active" : ""} onClick={() => setView({ kind: "crashlog" })}>
+          <button
+            className={view.kind === "crashlog" ? "active" : ""}
+            onClick={() => setView({ kind: "crashlog" })}
+          >
             Troubleshooting
           </button>
         </nav>
@@ -115,6 +169,7 @@ export function App() {
             void refresh();
             setView({ kind: "hub" });
           }}
+          onOpenAnnotator={(id) => setView({ kind: "annotator", id })}
         />
       )}
 
@@ -135,7 +190,9 @@ function ProjectTable(props: {
     return (
       <div className="empty">
         <p>No projects yet.</p>
-        <p className="muted">Create one to start the Intake → Dedup → Segmentation → Export pipeline.</p>
+        <p className="muted">
+          Create one to start the Intake {"→"} Dedup {"→"} Segmentation {"→"} Export pipeline.
+        </p>
       </div>
     );
   }
@@ -173,4 +230,3 @@ function ProjectTable(props: {
     </table>
   );
 }
-

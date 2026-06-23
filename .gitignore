@@ -18,3 +18,6 @@ Thumbs.db
 
 # EndoSeg local data (never commit patient data)
 EndoSeg Library/
+
+# Stray manual backup copies (e.g. Windows "- Copy" duplicates)
+EndoSeg-app - Copy/
