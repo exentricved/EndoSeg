@@ -370,7 +370,9 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       img.onload = null;
       img.onerror = null;
     };
-  }, [frameIdx, drawScene, fitToView]);
+  // `frames` in deps so this re-runs once after the IPC load completes — on first mount,
+  // framesRef.current[0] is empty (IPC not done yet), so we need to retry when it arrives.
+  }, [frameIdx, frames, drawScene, fitToView]);
 
   useEffect(() => {
     refreshAnnCount();
