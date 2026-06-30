@@ -8,13 +8,15 @@ import { SettingsView } from "./SettingsView.js";
 import { ProjectDetail } from "./ProjectDetail.js";
 import { StageBadge, formatTime } from "./ui.js";
 import { SegmentationView } from "./SegmentationView.js";
+import { FrameReviewView } from "./FrameReviewView.js";
 
 type View =
   | { kind: "hub" }
   | { kind: "crashlog" }
   | { kind: "settings" }
   | { kind: "project"; id: string }
-  | { kind: "annotator"; id: string };
+  | { kind: "annotator"; id: string }
+  | { kind: "frame-review"; id: string };
 
 export function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -170,6 +172,14 @@ export function App() {
             setView({ kind: "hub" });
           }}
           onOpenAnnotator={(id) => setView({ kind: "annotator", id })}
+          onOpenFrameReview={(id) => setView({ kind: "frame-review", id })}
+        />
+      )}
+
+      {view.kind === "frame-review" && (
+        <FrameReviewView
+          projectId={view.id}
+          onBack={() => setView({ kind: "project", id: view.id })}
         />
       )}
 

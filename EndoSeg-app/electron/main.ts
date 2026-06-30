@@ -9,6 +9,7 @@ import {
   type LibraryState,
   type IntakeProgress,
   type DedupProgress,
+  type ExportProgress,
   type UpdateStatus,
 } from "../src/shared/ipc.js";
 import {
@@ -24,7 +25,9 @@ import {
   loadSegmentationSnapshot,
   saveSegmentationSnapshot,
   resolveFramePath,
+  getFrameReview,
 } from "../src/node/segmentation.js";
+import { runExport } from "../src/node/export.js";
 import { setupUpdater, checkForUpdates } from "./updater.js";
 import {
   type Settings,
@@ -273,7 +276,40 @@ function registerIpc(): void {
     }
   });
 
+  ipcMain.handle(IPC.exportRun, async (event, projectId: unknown) => {
+    if (typeof projectId !== "string") return null;
+    const send = (p: ExportProgress) => event.sender.send(IPC.exportProgress, p);
+    try {
+      await updateStageOnDisk(libraryDir, projectId, "export", { status: "in_progress" }, nowIso());
+      const result = await runExport(libraryDir, projectId, send);
+      return await updateStageOnDisk(
+        libraryDir,
+        projectId,
+        "export",
+        { status: "done", counts: { frames: result.frameCount, labelMaps: result.labelMapCount } },
+        nowIso(),
+      );
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      await crashLogger.record(
+        { source: "export", message: e.message, detail: e.stack, projectId, stage: "export" },
+        nowIso(),
+      );
+      return updateStageOnDisk(libraryDir, projectId, "export", { status: "error", error: e.message }, nowIso());
+    }
+  });
+
+  ipcMain.handle(IPC.exportReveal, async (_e, projectId: unknown) => {
+    if (typeof projectId !== "string") return;
+    const dir = path.join(libraryDir, "projects", projectId, "03_export");
+    await shell.openPath(dir);
+  });
+
   ipcMain.handle(IPC.updateCheck, (): Promise<UpdateStatus> => checkForUpdates(app.isPackaged));
+
+  ipcMain.handle(IPC.framesReview, async (_e, projectId: unknown) =>
+    typeof projectId === "string" ? getFrameReview(libraryDir, projectId) : null,
+  );
 
   ipcMain.handle(IPC.crashList, () => crashLogger.list());
   ipcMain.handle(IPC.crashRead, (_e, file: unknown) =>

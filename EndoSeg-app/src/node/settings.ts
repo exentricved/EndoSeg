@@ -19,7 +19,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   libraryDir: null,
-  frameSampleEvery: 6,
+  frameSampleEvery: 15, // ~2 fps at 30 fps source — standard for endoscopy annotation
   gpu: "auto",
   dedupThreshold: 8,
 };

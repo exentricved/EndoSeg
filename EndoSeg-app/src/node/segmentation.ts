@@ -6,7 +6,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { projectDir } from "./library.js";
-import type { SegFrame, SegFramesResult, SegSaveResult } from "../shared/ipc.js";
+import type { SegFrame, SegFramesResult, SegSaveResult, FrameReviewResult } from "../shared/ipc.js";
 
 const FRAME_RE = /\.(png|jpg|jpeg)$/i;
 type FrameSource = "kept" | "raw";
@@ -92,6 +92,31 @@ export async function listSegFrames(
     }
   }
   return { source: "none", frames: [] };
+}
+
+/** Load dedup-report.json and attach frame thumbnail URLs for the review page. */
+export async function getFrameReview(
+  baseDir: string,
+  projectId: string,
+): Promise<FrameReviewResult | null> {
+  const reportPath = path.join(projectDir(baseDir, projectId), "01_frames", "dedup-report.json");
+  try {
+    const text = await fs.readFile(reportPath, "utf8");
+    const report = JSON.parse(text) as {
+      kept: number; dropped: number; total: number;
+      decisions: Array<{ file: string; kept: boolean; distance?: number; representative: string }>;
+    };
+    const items = report.decisions.map((d) => ({
+      file: d.file,
+      url: `endoseg-frame://frame/${encodeURIComponent(projectId)}/raw/${encodeURIComponent(d.file)}`,
+      kept: d.kept,
+      distance: d.distance,
+      representative: d.representative,
+    }));
+    return { items, kept: report.kept, dropped: report.dropped, total: report.total };
+  } catch {
+    return null;
+  }
 }
 
 const ANNOTATIONS_FILE = "annotations.leus";

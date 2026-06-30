@@ -22,11 +22,15 @@ export const IPC = {
   segListFrames: "segmentation:listFrames",
   segLoad: "segmentation:load",
   segSave: "segmentation:save",
+  exportRun: "export:run",
+  exportProgress: "export:progress",
+  exportReveal: "export:reveal",
   updateCheck: "update:check",
   updateStatus: "update:status",
   crashList: "crash:list",
   crashRead: "crash:read",
   crashOpenFolder: "crash:openFolder",
+  framesReview: "frames:review",
 } as const;
 
 export interface IntakeProgress {
@@ -62,6 +66,19 @@ export interface SegSaveResult {
   maskCount: number;
 }
 
+export interface ExportProgress {
+  phase: "frames" | "metadata";
+  done: number;
+  total: number;
+}
+
+export interface ExportResult {
+  exportId: string;
+  exportDir: string;
+  frameCount: number;
+  labelMapCount: number;
+}
+
 export type UpdateState =
   | "checking"
   | "available"
@@ -76,6 +93,21 @@ export interface UpdateStatus {
   version?: string;
   percent?: number;
   message?: string;
+}
+
+export interface FrameReviewItem {
+  file: string;
+  url: string;
+  kept: boolean;
+  distance?: number;
+  representative: string;
+}
+
+export interface FrameReviewResult {
+  items: FrameReviewItem[];
+  kept: number;
+  dropped: number;
+  total: number;
 }
 
 export interface AppInfo {
@@ -115,11 +147,17 @@ export interface EndoSegApi {
   loadSegmentation(projectId: string): Promise<unknown | null>;
   /** Persist the annotation snapshot + per-class mask PNGs into 02_segmentation/. */
   saveSegmentation(projectId: string, snapshot: unknown): Promise<ProjectManifest | null>;
+  /** Run the export stage: copies frames + generates multi-class label maps + metadata.json. */
+  runExport(projectId: string): Promise<ProjectManifest | null>;
+  onExportProgress(cb: (p: ExportProgress) => void): () => void;
+  /** Open the project's 03_export folder in the system file manager. */
+  revealExport(projectId: string): Promise<void>;
   checkForUpdates(): Promise<UpdateStatus>;
   onUpdateStatus(cb: (s: UpdateStatus) => void): () => void;
   listCrashes(): Promise<string[]>;
   readCrash(file: string): Promise<string | null>;
   openCrashFolder(): Promise<void>;
+  getFrameReview(projectId: string): Promise<FrameReviewResult | null>;
 }
 
 declare global {

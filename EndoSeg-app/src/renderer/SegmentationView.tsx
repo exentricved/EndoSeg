@@ -1,39 +1,48 @@
 // Native canvas-based segmentation annotator for EndoSeg.
 // Reads frames via the endoseg-frame:// protocol (IPC), saves masks + polygons to 02_segmentation/.
-// No pulse-v3-ercp dependency.
 
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { SegFrame } from "../shared/ipc.js";
 
 // ---- Class catalog ----
 const CLASSES = [
-  { id: 1, name: "PAPILLA_BODY",               abbr: "PB",  color: "#F472B6" },
-  { id: 2, name: "PAPILLA_ORIFICE",            abbr: "PO",  color: "#A78BFA" },
-  { id: 3, name: "HOODING_FOLD",               abbr: "HF",  color: "#FB923C" },
-  { id: 4, name: "PERIAMPULLARY_DIVERTICULUM", abbr: "PAD", color: "#7C3AED" },
-  { id: 5, name: "DUODENAL_WALL",              abbr: "DW",  color: "#FBBF24" },
-  { id: 6, name: "INSTRUMENT_MASK",            abbr: "INS", color: "#9CA3AF" },
-  { id: 7, name: "SPECULAR_HIGHLIGHT",         abbr: "SH",  color: "#FDE68A" },
-  { id: 8, name: "FLUID_POOL",                abbr: "FP",  color: "#22D3EE" },
+  { id: 1,  name: "PAPILLA_BODY",               abbr: "PB",  color: "#F472B6" },
+  { id: 2,  name: "PAPILLA_ORIFICE",            abbr: "PO",  color: "#A78BFA" },
+  { id: 3,  name: "HOODING_FOLD",               abbr: "HF",  color: "#FB923C" },
+  { id: 4,  name: "PERIAMPULLARY_DIVERTICULUM", abbr: "PAD", color: "#7C3AED" },
+  { id: 5,  name: "DUODENAL_WALL",              abbr: "DW",  color: "#4ADE80" },
+  { id: 6,  name: "INSTRUMENT_MASK",            abbr: "INS", color: "#9CA3AF" },
+  { id: 7,  name: "SPECULAR_HIGHLIGHT",         abbr: "SH",  color: "#FDE68A" },
+  { id: 8,  name: "FLUID_POOL",                 abbr: "FP",  color: "#22D3EE" },
+  { id: 9,  name: "ENDOSCOPE",                  abbr: "ENS", color: "#0EA5E9" },
+  { id: 10, name: "SPHINCTEROTOME",             abbr: "SPH", color: "#EF4444" },
 ] as const;
 
+// Hue ranges that match duodenal mucosa (reddish/pinkish/salmon).
+const DW_HUE_HIGH = 35;    // degrees
+const DW_HUE_WRAP = 325;  // also match 325–360
+const DW_SAT_MIN  = 0.12;
+const DW_LIG_MIN  = 0.15;
+const DW_LIG_MAX  = 0.88;
+
+const PHASES = ["pre-cannulation", "cannulation", "sphincterotomy", "exiting"] as const;
+type ProcedurePhase = typeof PHASES[number] | "";
 type ClassDef = typeof CLASSES[number];
 
 // ---- Types ----
-type Pt = { x: number; y: number };
+type Pt   = { x: number; y: number };
 type Rect = { x: number; y: number; w: number; h: number };
 type Polygon = { id: string; classId: number; points: Pt[] };
-type Tool = "polygon" | "select" | "crop";
+type Tool = "polygon" | "select" | "crop" | "brush" | "eraser" | "lasso";
 
-// Snapshot stored in 02_segmentation/annotations.leus.
-// The node-side writer reads `frames[].name` and `frames[].label_masks`; everything else is
-// extra metadata for future restores.
 interface NativeSnapshot {
   version: 1;
   frames: Array<{
     frameId: string;
     name: string;
     polygons: Polygon[];
+    phase?: string;
+    pixelMasks?: Record<string, string>;
     label_masks: Record<string, string>;
   }>;
 }
@@ -46,21 +55,39 @@ function clsById(id: number): ClassDef | undefined {
   return CLASSES.find((c) => c.id === id);
 }
 
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.slice(1);
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
 function hexRgba(cls: ClassDef, a: number): string {
-  const h = cls.color.slice(1);
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
+  const [r, g, b] = hexToRgb(cls.color);
   return `rgba(${r},${g},${b},${a})`;
 }
 
 function clsLuminance(cls: ClassDef): number {
-  const h = cls.color.slice(1);
-  return (
-    parseInt(h.slice(0, 2), 16) * 0.299 +
-    parseInt(h.slice(2, 4), 16) * 0.587 +
-    parseInt(h.slice(4, 6), 16) * 0.114
-  );
+  const [r, g, b] = hexToRgb(cls.color);
+  return r * 0.299 + g * 0.587 + b * 0.114;
+}
+
+function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === rn)      h = ((gn - bn) / d + (gn < bn ? 6 : 0)) / 6;
+  else if (max === gn) h = ((bn - rn) / d + 2) / 6;
+  else                 h = ((rn - gn) / d + 4) / 6;
+  return { h: h * 360, s, l };
+}
+
+function isDuodenalWallPixel(r: number, g: number, b: number): boolean {
+  const { h, s, l } = rgbToHsl(r, g, b);
+  if (s < DW_SAT_MIN || l < DW_LIG_MIN || l > DW_LIG_MAX) return false;
+  return h <= DW_HUE_HIGH || h >= DW_HUE_WRAP;
 }
 
 function pointInPoly(poly: Polygon, pt: Pt): boolean {
@@ -77,29 +104,45 @@ function pointInPoly(poly: Polygon, pt: Pt): boolean {
   return inside;
 }
 
-// Rasterize polygons to per-class binary PNG masks (white = mask, black = background).
-// Done on a separate canvas so the display canvas (which shows the frame image) is never tainted.
-function rasterizeMasks(polygons: Polygon[], w: number, h: number): Record<string, string> {
+// Rasterize polygons + pixel masks to per-class binary PNG masks.
+function rasterizeAllMasks(
+  polygons: Polygon[],
+  pixelMasks: Map<number, HTMLCanvasElement> | undefined,
+  w: number,
+  h: number,
+): Record<string, string> {
   if (!w || !h) return {};
   const byClass = new Map<number, Polygon[]>();
   for (const p of polygons) {
     if (!byClass.has(p.classId)) byClass.set(p.classId, []);
     byClass.get(p.classId)!.push(p);
   }
+  const classIds = new Set<number>([...byClass.keys(), ...(pixelMasks?.keys() ?? [])]);
   const out: Record<string, string> = {};
-  for (const [classId, polys] of byClass) {
+  for (const classId of classIds) {
     const cv = document.createElement("canvas");
-    cv.width = w;
-    cv.height = h;
+    cv.width = w; cv.height = h;
     const ctx = cv.getContext("2d")!;
     ctx.fillStyle = "white";
-    for (const poly of polys) {
+    for (const poly of byClass.get(classId) ?? []) {
       if (poly.points.length < 3) continue;
       ctx.beginPath();
       ctx.moveTo(poly.points[0].x, poly.points[0].y);
       for (let i = 1; i < poly.points.length; i++) ctx.lineTo(poly.points[i].x, poly.points[i].y);
       ctx.closePath();
       ctx.fill();
+    }
+    const maskCv = pixelMasks?.get(classId);
+    if (maskCv && maskCv.width === w && maskCv.height === h) {
+      // Merge: any painted pixel → white in output
+      const src = maskCv.getContext("2d")!.getImageData(0, 0, w, h);
+      const dst = ctx.getImageData(0, 0, w, h);
+      for (let i = 0; i < src.data.length; i += 4) {
+        if (src.data[i + 3] > 0) {
+          dst.data[i] = 255; dst.data[i + 1] = 255; dst.data[i + 2] = 255; dst.data[i + 3] = 255;
+        }
+      }
+      ctx.putImageData(dst, 0, 0);
     }
     out[String(classId)] = cv.toDataURL("image/png");
   }
@@ -108,98 +151,164 @@ function rasterizeMasks(polygons: Polygon[], w: number, h: number): Record<strin
 
 // ---- Component ----
 export function SegmentationView({ projectId }: { projectId: string }) {
-  // React state — drives sidebar, toolbar display, and status bar.
-  const [frames, setFrames] = useState<SegFrame[]>([]);
-  const [frameIdx, setFrameIdx] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [tool, setTool] = useState<Tool>("polygon");
-  const [classId, setClassId] = useState(1);
-  const [hasCrop, setHasCrop] = useState(false);
-  const [cropZoom, setCropZoom] = useState(false);
-  const [zoomPct, setZoomPct] = useState(100);
-  const [annCount, setAnnCount] = useState(0);
+  const [frames, setFrames]             = useState<SegFrame[]>([]);
+  const [frameIdx, setFrameIdx]         = useState(0);
+  const [loading, setLoading]           = useState(true);
+  const [saving, setSaving]             = useState(false);
+  const [saveMsg, setSaveMsg]           = useState<string | null>(null);
+  const [error, setError]               = useState<string | null>(null);
+  const [tool, setTool]                 = useState<Tool>("polygon");
+  const [classId, setClassId]           = useState(1);
+  const [hasCrop, setHasCrop]           = useState(false);
+  const [cropZoom, setCropZoom]         = useState(false);
+  const [zoomPct, setZoomPct]           = useState(100);
+  const [annCount, setAnnCount]         = useState(0);
   const [inProgressLen, setInProgressLen] = useState(0);
   const [hasSelection, setHasSelection] = useState(false);
+  const [currentPhase, setCurrentPhase] = useState<ProcedurePhase>("");
+  const [brushRadius, setBrushRadius]   = useState(20);
+  const [copyFromInput, setCopyFromInput] = useState("");
+  const [autoDwBusy, setAutoDwBusy]     = useState(false);
+  const [showMasks, setShowMasks]       = useState(true);
 
-  // Refs — read by drawScene (which must be stable) without stale closures.
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const imageRef = useRef<HTMLImageElement | null>(null);
-  const framesRef = useRef<SegFrame[]>([]);
-  const frameIdxRef = useRef(0);
-  const toolRef = useRef<Tool>("polygon");
-  const classIdRef = useRef(1);
-  const zoomRef = useRef(1);
-  const panRef = useRef<Pt>({ x: 0, y: 0 });
-  // Per-frame polygon annotations. Key = SegFrame.frameId.
-  const annsRef = useRef<Map<string, Polygon[]>>(new Map());
-  const cropRectRef = useRef<Rect | null>(null);
-  const cropZoomRef = useRef(false);
-  const inProgressRef = useRef<Pt[]>([]);
+  // Refs mirrored from state for use inside stable callbacks.
+  const canvasRef       = useRef<HTMLCanvasElement>(null);
+  const imageRef        = useRef<HTMLImageElement | null>(null);
+  const framesRef       = useRef<SegFrame[]>([]);
+  const frameIdxRef     = useRef(0);
+  const toolRef         = useRef<Tool>("polygon");
+  const classIdRef      = useRef(1);
+  const zoomRef         = useRef(1);
+  const panRef          = useRef<Pt>({ x: 0, y: 0 });
+  const annsRef         = useRef<Map<string, Polygon[]>>(new Map());
+  const phasesRef       = useRef<Map<string, string>>(new Map());
+  const cropRectRef     = useRef<Rect | null>(null);
+  const cropZoomRef     = useRef(false);
+  const inProgressRef   = useRef<Pt[]>([]);
   const selectedPolyIdRef = useRef<string | null>(null);
-  // Natural image dimensions populated on first load — fallback when PNG header gives 0.
-  const frameSizesRef = useRef<Map<string, { w: number; h: number }>>(new Map());
+  const frameSizesRef   = useRef<Map<string, { w: number; h: number }>>(new Map());
+  const dprRef          = useRef(window.devicePixelRatio || 1);
+  const brushRadiusRef  = useRef(20);
+  const showMasksRef    = useRef(true);
+  const isBrushingRef   = useRef(false);
+  // Per-frame pixel masks: frameId → classId → canvas at natural image resolution.
+  const pixelMasksRef   = useRef<Map<string, Map<number, HTMLCanvasElement>>>(new Map());
 
-  // Mouse interaction refs.
-  const isPanningRef = useRef(false);
-  const lastMouseRef = useRef<Pt>({ x: 0, y: 0 });
-  const isCropDraggingRef = useRef(false);
-  const cropDragStartRef = useRef<Pt | null>(null);
+  const isPanningRef    = useRef(false);
+  const lastMouseRef    = useRef<Pt>({ x: 0, y: 0 });
+  const isCropDraggingRef  = useRef(false);
+  const cropDragStartRef   = useRef<Pt | null>(null);
+  const handleSaveRef      = useRef<() => Promise<void>>(async () => {});
+  const lassoPathRef       = useRef<Pt[]>([]);
 
-  // A ref to handleSave so the keyboard effect doesn't need it in deps.
-  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
+  // Undo stack: max 20 entries, one per discrete action.
+  type UndoEntry =
+    | { kind: "poly-add";    frameId: string; polyId: string }
+    | { kind: "poly-remove"; frameId: string; poly: Polygon }
+    | { kind: "mask"; frameId: string; classId: number; w: number; h: number; data: Uint8ClampedArray | null };
+  const undoStackRef = useRef<UndoEntry[]>([] as UndoEntry[]);
 
-  // ---- Wrapper setters that keep refs in sync ----
+  // ---- Synced setters ----
   const setFrames_ = useCallback((fs: SegFrame[]) => {
-    framesRef.current = fs;
-    setFrames(fs);
+    framesRef.current = fs; setFrames(fs);
   }, []);
 
   const setTool_ = useCallback((t: Tool) => {
-    toolRef.current = t;
-    setTool(t);
-    inProgressRef.current = [];
-    setInProgressLen(0);
+    toolRef.current = t; setTool(t);
+    inProgressRef.current = []; setInProgressLen(0);
   }, []);
 
   const setClassId_ = useCallback((id: number) => {
-    classIdRef.current = id;
-    setClassId(id);
+    classIdRef.current = id; setClassId(id);
   }, []);
 
-  // ---- drawScene — stable, reads refs only ----
+  // ---- Undo helpers ----
+  const snapshotMask = useCallback((frameId: string, classId: number): UndoEntry => {
+    const fm = pixelMasksRef.current.get(frameId);
+    const cv = fm?.get(classId);
+    if (!cv || !cv.width || !cv.height) return { kind: "mask", frameId, classId, w: 0, h: 0, data: null };
+    const id = cv.getContext("2d")!.getImageData(0, 0, cv.width, cv.height);
+    return { kind: "mask", frameId, classId, w: cv.width, h: cv.height, data: new Uint8ClampedArray(id.data) };
+  }, []);
+
+  const pushUndo = useCallback((entry: UndoEntry) => {
+    undoStackRef.current.push(entry);
+    if (undoStackRef.current.length > 20) undoStackRef.current.shift();
+  }, []);
+
+  const setPhase_ = useCallback((phase: string) => {
+    const frame = framesRef.current[frameIdxRef.current];
+    if (!frame) return;
+    if (phase) phasesRef.current.set(frame.frameId, phase);
+    else phasesRef.current.delete(frame.frameId);
+    setCurrentPhase(phase as ProcedurePhase);
+  }, []);
+
+  // ---- drawScene — stable ----
   const drawScene = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const img = imageRef.current;
-    const z = zoomRef.current;
-    const pan = panRef.current;
-    const frame = framesRef.current[frameIdxRef.current];
+    const dpr = dprRef.current;
+    // Keep canvas buffer in sync with CSS size (ResizeObserver can fire too early).
+    const aw = Math.round(canvas.offsetWidth  * dpr);
+    const ah = Math.round(canvas.offsetHeight * dpr);
+    if (aw > 0 && ah > 0 && (canvas.width !== aw || canvas.height !== ah)) {
+      canvas.width  = aw;
+      canvas.height = ah;
+    }
+
+    const img  = imageRef.current;
+    const z    = zoomRef.current;
+    const pan  = panRef.current;
+    const frame    = framesRef.current[frameIdxRef.current];
     const polygons = frame ? (annsRef.current.get(frame.frameId) ?? []) : [];
-    const inPts = inProgressRef.current;
-    const selId = selectedPolyIdRef.current;
-    const cr = cropRectRef.current;
-    const cz = cropZoomRef.current;
+    const inPts    = inProgressRef.current;
+    const selId    = selectedPolyIdRef.current;
+    const cr       = cropRectRef.current;
+    const cz       = cropZoomRef.current;
     const activeCls = classIdRef.current;
 
+    // Clear physical buffer first, then scale to CSS pixel space.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#0d1520";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    ctx.save();
+    ctx.scale(dpr, dpr); // everything below is in CSS pixel coordinates
+
+    const cssW = canvas.width  / dpr;
+    const cssH = canvas.height / dpr;
+
     if (img) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+
       ctx.save();
       ctx.translate(pan.x, pan.y);
       ctx.scale(z, z);
       ctx.drawImage(img, 0, 0);
       ctx.restore();
 
+      // Pixel masks (painted with brush / auto-annotate).
+      const frameMasks = frame ? pixelMasksRef.current.get(frame.frameId) : undefined;
+      if (frameMasks && showMasksRef.current) {
+        for (const [, maskCv] of frameMasks) {
+          if (!maskCv.width || !maskCv.height) continue;
+          ctx.save();
+          ctx.translate(pan.x, pan.y);
+          ctx.scale(z, z);
+          ctx.globalAlpha = 0.5;
+          ctx.drawImage(maskCv, 0, 0);
+          ctx.globalAlpha = 1;
+          ctx.restore();
+        }
+      }
+
       // Existing polygons.
-      for (const poly of polygons) {
+      if (showMasksRef.current) for (const poly of polygons) {
         const cls = clsById(poly.classId);
         if (!cls || poly.points.length < 2) continue;
         const selected = poly.id === selId;
@@ -220,7 +329,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         ctx.restore();
       }
 
-      // In-progress polygon being drawn.
+      // In-progress polygon.
       if (inPts.length > 0) {
         const cls = clsById(activeCls);
         if (cls) {
@@ -235,17 +344,15 @@ export function SegmentationView({ projectId }: { projectId: string }) {
           for (let i = 1; i < inPts.length; i++) ctx.lineTo(inPts[i].x, inPts[i].y);
           ctx.stroke();
           ctx.setLineDash([]);
-          // Point dots.
           ctx.fillStyle = hexRgba(cls, 1);
           for (const pt of inPts) {
             ctx.beginPath();
-            ctx.arc(pt.x, pt.y, 4 / z, 0, Math.PI * 2);
+            ctx.arc(pt.x, pt.y, 6 / z, 0, Math.PI * 2);
             ctx.fill();
           }
-          // Close-target halo around first point (appears when ≥3 pts).
           if (inPts.length >= 3) {
             ctx.beginPath();
-            ctx.arc(inPts[0].x, inPts[0].y, 10 / z, 0, Math.PI * 2);
+            ctx.arc(inPts[0].x, inPts[0].y, 12 / z, 0, Math.PI * 2);
             ctx.strokeStyle = "rgba(255,255,255,0.55)";
             ctx.lineWidth = 1 / z;
             ctx.stroke();
@@ -253,9 +360,32 @@ export function SegmentationView({ projectId }: { projectId: string }) {
           ctx.restore();
         }
       }
+
+      // In-progress lasso.
+      if (lassoPathRef.current.length > 1) {
+        const cls = clsById(activeCls);
+        if (cls) {
+          const lpts = lassoPathRef.current;
+          ctx.save();
+          ctx.translate(pan.x, pan.y);
+          ctx.scale(z, z);
+          ctx.beginPath();
+          ctx.moveTo(lpts[0].x, lpts[0].y);
+          for (let i = 1; i < lpts.length; i++) ctx.lineTo(lpts[i].x, lpts[i].y);
+          ctx.closePath();
+          ctx.fillStyle = hexRgba(cls, 0.25);
+          ctx.fill();
+          ctx.strokeStyle = hexRgba(cls, 0.9);
+          ctx.lineWidth = 1.5 / z;
+          ctx.setLineDash([4 / z, 3 / z]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+      }
     }
 
-    // Crop overlay: dim outside the rect + cyan border.
+    // Crop overlay.
     if (cr && !cz) {
       const sx = cr.x * z + pan.x;
       const sy = cr.y * z + pan.y;
@@ -264,7 +394,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       ctx.save();
       ctx.fillStyle = "rgba(0,0,0,0.48)";
       ctx.beginPath();
-      ctx.rect(0, 0, canvas.width, canvas.height);
+      ctx.rect(0, 0, cssW, cssH);
       ctx.rect(sx, sy, sw, sh);
       ctx.fill("evenodd");
       ctx.strokeStyle = "#22D3EE";
@@ -274,40 +404,73 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       ctx.setLineDash([]);
       ctx.restore();
     }
-  }, []); // stable — reads refs only, no React state deps
+
+    ctx.restore(); // undo dpr scale
+  }, []);
 
   // ---- fitToView — stable ----
   const fitToView = useCallback(() => {
     const canvas = canvasRef.current;
-    const img = imageRef.current;
+    const img    = imageRef.current;
     if (!canvas || !img) return;
-    const cw = canvas.width, ch = canvas.height, pad = 24;
-    const cr = cropRectRef.current;
+    const dpr = dprRef.current;
+    // Sync canvas buffer before reading dimensions.
+    const aw = Math.round(canvas.offsetWidth  * dpr);
+    const ah = Math.round(canvas.offsetHeight * dpr);
+    if (aw > 0 && ah > 0 && (canvas.width !== aw || canvas.height !== ah)) {
+      canvas.width  = aw;
+      canvas.height = ah;
+    }
+    const cw  = canvas.width  / dpr;
+    const ch  = canvas.height / dpr;
+    const pad = 24;
+    const cr  = cropRectRef.current;
     if (cr && cropZoomRef.current) {
       const z = Math.min((cw - pad * 2) / cr.w, (ch - pad * 2) / cr.h);
       zoomRef.current = z;
-      panRef.current = {
-        x: (cw - cr.w * z) / 2 - cr.x * z,
-        y: (ch - cr.h * z) / 2 - cr.y * z,
-      };
+      panRef.current  = { x: (cw - cr.w * z) / 2 - cr.x * z, y: (ch - cr.h * z) / 2 - cr.y * z };
     } else {
       const z = Math.min((cw - pad * 2) / img.naturalWidth, (ch - pad * 2) / img.naturalHeight);
       zoomRef.current = z;
-      panRef.current = {
-        x: (cw - img.naturalWidth * z) / 2,
-        y: (ch - img.naturalHeight * z) / 2,
-      };
+      panRef.current  = { x: (cw - img.naturalWidth * z) / 2, y: (ch - img.naturalHeight * z) / 2 };
     }
     setZoomPct(Math.round(zoomRef.current * 100));
   }, []);
 
-  // ---- refreshAnnCount — stable ----
   const refreshAnnCount = useCallback(() => {
     const f = framesRef.current[frameIdxRef.current];
     setAnnCount(f ? (annsRef.current.get(f.frameId)?.length ?? 0) : 0);
   }, []);
 
-  // ---- Load frames + snapshot on mount ----
+  const undo = useCallback(() => {
+    const entry = undoStackRef.current.pop();
+    if (!entry) return;
+    if (entry.kind === "poly-add") {
+      const list = annsRef.current.get(entry.frameId);
+      if (list) annsRef.current.set(entry.frameId, list.filter((p) => p.id !== entry.polyId));
+      refreshAnnCount();
+    } else if (entry.kind === "poly-remove") {
+      if (!annsRef.current.has(entry.frameId)) annsRef.current.set(entry.frameId, []);
+      annsRef.current.get(entry.frameId)!.push(entry.poly);
+      refreshAnnCount();
+    } else if (entry.kind === "mask") {
+      let cv = pixelMasksRef.current.get(entry.frameId)?.get(entry.classId);
+      if (!entry.data || !entry.w || !entry.h) {
+        if (cv) cv.getContext("2d")!.clearRect(0, 0, cv.width, cv.height);
+      } else {
+        if (!cv || cv.width !== entry.w || cv.height !== entry.h) {
+          if (!pixelMasksRef.current.has(entry.frameId)) pixelMasksRef.current.set(entry.frameId, new Map());
+          cv = document.createElement("canvas");
+          cv.width = entry.w; cv.height = entry.h;
+          pixelMasksRef.current.get(entry.frameId)!.set(entry.classId, cv);
+        }
+        cv.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(entry.data), entry.w, entry.h), 0, 0);
+      }
+    }
+    drawScene();
+  }, [drawScene, refreshAnnCount]);
+
+  // ---- Load frames + snapshot ----
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -325,66 +488,66 @@ export function SegmentationView({ projectId }: { projectId: string }) {
               if (f.frameId && Array.isArray(f.polygons) && f.polygons.length) {
                 annsRef.current.set(f.frameId, [...f.polygons]);
               }
+              if (f.frameId && f.phase) {
+                phasesRef.current.set(f.frameId, f.phase);
+              }
+              // Restore pixel masks from saved data URLs.
+              if (f.frameId && f.pixelMasks && typeof f.pixelMasks === "object") {
+                for (const [classIdStr, dataUrl] of Object.entries(f.pixelMasks)) {
+                  if (typeof dataUrl !== "string") continue;
+                  const cid = Number(classIdStr);
+                  const frameId = f.frameId;
+                  const img = new Image();
+                  img.onload = () => {
+                    const cv = document.createElement("canvas");
+                    cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+                    cv.getContext("2d")!.drawImage(img, 0, 0);
+                    if (!pixelMasksRef.current.has(frameId)) pixelMasksRef.current.set(frameId, new Map());
+                    pixelMasksRef.current.get(frameId)!.set(cid, cv);
+                  };
+                  img.src = dataUrl;
+                }
+              }
             }
+            const firstId = framesRes.frames[0]?.frameId;
+            if (firstId) setCurrentPhase((phasesRef.current.get(firstId) ?? "") as ProcedurePhase);
           }
         }
         setLoading(false);
       })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
+      .catch((e: unknown) => { if (!cancelled) setError(String(e)); });
+    return () => { cancelled = true; };
   }, [projectId, setFrames_]);
 
-  // ---- Load image whenever the active frame changes ----
+  // ---- Load image on frame change ----
   useEffect(() => {
     const frame = framesRef.current[frameIdx];
-    if (!frame) {
-      imageRef.current = null;
-      drawScene();
-      return;
-    }
+    if (!frame) { imageRef.current = null; drawScene(); return; }
     imageRef.current = null;
     drawScene();
     const img = new Image();
     img.onload = () => {
       imageRef.current = img;
-      frameSizesRef.current.set(frame.frameId, {
-        w: img.naturalWidth,
-        h: img.naturalHeight,
-      });
+      frameSizesRef.current.set(frame.frameId, { w: img.naturalWidth, h: img.naturalHeight });
       fitToView();
       drawScene();
     };
-    img.onerror = () => {
-      imageRef.current = null;
-      drawScene();
-    };
-    // Do NOT set crossOrigin — endoseg-frame:// is a privileged Electron protocol;
-    // adding crossOrigin blocks requests and taints the display canvas unnecessarily.
-    // Mask rasterization uses a separate offscreen canvas that never touches the frame image.
+    img.onerror = () => { imageRef.current = null; drawScene(); };
     img.src = frame.url;
-    return () => {
-      img.onload = null;
-      img.onerror = null;
-    };
-  // `frames` in deps so this re-runs once after the IPC load completes — on first mount,
-  // framesRef.current[0] is empty (IPC not done yet), so we need to retry when it arrives.
+    return () => { img.onload = null; img.onerror = null; };
   }, [frameIdx, frames, drawScene, fitToView]);
 
-  useEffect(() => {
-    refreshAnnCount();
-  }, [frameIdx, refreshAnnCount]);
+  useEffect(() => { refreshAnnCount(); }, [frameIdx, refreshAnnCount]);
 
-  // ---- Canvas resize handler ----
+  // ---- Canvas resize (DPR-aware) ----
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const obs = new ResizeObserver(() => {
-      canvas.width = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
+      const dpr = window.devicePixelRatio || 1;
+      dprRef.current = dpr;
+      canvas.width  = canvas.offsetWidth  * dpr;
+      canvas.height = canvas.offsetHeight * dpr;
       fitToView();
       drawScene();
     });
@@ -392,56 +555,59 @@ export function SegmentationView({ projectId }: { projectId: string }) {
     return () => obs.disconnect();
   }, [fitToView, drawScene]);
 
-  // ---- Navigate to frame ----
+  // ---- Navigate ----
   const navigateTo = useCallback((idx: number) => {
     const n = Math.max(0, Math.min(idx, framesRef.current.length - 1));
     frameIdxRef.current = n;
     setFrameIdx(n);
-    inProgressRef.current = [];
-    setInProgressLen(0);
-    selectedPolyIdRef.current = null;
-    setHasSelection(false);
+    inProgressRef.current = []; setInProgressLen(0);
+    selectedPolyIdRef.current = null; setHasSelection(false);
+    const newFrame = framesRef.current[n];
+    setCurrentPhase((newFrame ? (phasesRef.current.get(newFrame.frameId) ?? "") : "") as ProcedurePhase);
   }, []);
 
-  // ---- Finish in-progress polygon ----
+  // ---- Finish polygon ----
   const finishPolygon = useCallback(() => {
     const pts = inProgressRef.current;
-    if (pts.length < 3) {
-      inProgressRef.current = [];
-      setInProgressLen(0);
-      drawScene();
-      return;
-    }
+    if (pts.length < 3) { inProgressRef.current = []; setInProgressLen(0); drawScene(); return; }
     const frame = framesRef.current[frameIdxRef.current];
-    if (!frame) {
-      inProgressRef.current = [];
-      setInProgressLen(0);
-      return;
-    }
+    if (!frame) { inProgressRef.current = []; setInProgressLen(0); return; }
     const poly: Polygon = { id: uid(), classId: classIdRef.current, points: [...pts] };
     if (!annsRef.current.has(frame.frameId)) annsRef.current.set(frame.frameId, []);
     annsRef.current.get(frame.frameId)!.push(poly);
-    inProgressRef.current = [];
-    setInProgressLen(0);
-    refreshAnnCount();
-    drawScene();
-  }, [drawScene, refreshAnnCount]);
+    pushUndo({ kind: "poly-add", frameId: frame.frameId, polyId: poly.id });
+    inProgressRef.current = []; setInProgressLen(0);
+    refreshAnnCount(); drawScene();
+  }, [drawScene, pushUndo, refreshAnnCount]);
 
   // ---- Save ----
   const handleSave = useCallback(async () => {
-    setSaving(true);
-    setSaveMsg(null);
+    setSaving(true); setSaveMsg(null);
     try {
+      const frameIds = new Set<string>();
+      for (const [id, polys] of annsRef.current) if (polys.length) frameIds.add(id);
+      for (const [id] of phasesRef.current) frameIds.add(id);
+      for (const [id, masks] of pixelMasksRef.current) if (masks.size) frameIds.add(id);
+
       const frameItems: NativeSnapshot["frames"] = [];
-      for (const [frameId, polys] of annsRef.current) {
-        if (!polys.length) continue;
+      for (const frameId of frameIds) {
         const frame = framesRef.current.find((f) => f.frameId === frameId);
         if (!frame) continue;
-        const sz = frameSizesRef.current.get(frameId);
-        const w = frame.width || sz?.w || 0;
+        const polys = annsRef.current.get(frameId) ?? [];
+        const phase = phasesRef.current.get(frameId);
+        const sz    = frameSizesRef.current.get(frameId);
+        const w = frame.width  || sz?.w || 0;
         const h = frame.height || sz?.h || 0;
-        const label_masks = rasterizeMasks(polys, w, h);
-        frameItems.push({ frameId, name: frame.name, polygons: polys, label_masks });
+        const frameMasks = pixelMasksRef.current.get(frameId);
+        const label_masks = rasterizeAllMasks(polys, frameMasks, w, h);
+        // Serialize pixel masks as data URLs for snapshot restore.
+        const pixelMasksData: Record<string, string> = {};
+        if (frameMasks) {
+          for (const [cid, cv] of frameMasks) {
+            if (cv.width && cv.height) pixelMasksData[String(cid)] = cv.toDataURL("image/png");
+          }
+        }
+        frameItems.push({ frameId, name: frame.name, polygons: polys, phase, pixelMasks: pixelMasksData, label_masks });
       }
       const snapshot: NativeSnapshot = { version: 1, frames: frameItems };
       await window.endoseg.saveSegmentation(projectId, snapshot);
@@ -454,10 +620,12 @@ export function SegmentationView({ projectId }: { projectId: string }) {
     }
   }, [projectId]);
 
-  // Keep saveRef current so the keyboard handler can call it without being in deps.
-  useEffect(() => {
-    handleSaveRef.current = handleSave;
-  }, [handleSave]);
+  useEffect(() => { handleSaveRef.current = handleSave; }, [handleSave]);
+
+  const toggleMasks = useCallback(() => {
+    const next = !showMasksRef.current;
+    showMasksRef.current = next; setShowMasks(next); drawScene();
+  }, [drawScene]);
 
   // ---- Keyboard shortcuts ----
   useEffect(() => {
@@ -465,71 +633,91 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-      if (e.key === "Escape") {
-        inProgressRef.current = [];
-        setInProgressLen(0);
-        drawScene();
-        return;
-      }
-      if (e.key === "Enter" && toolRef.current === "polygon") {
-        finishPolygon();
-        return;
-      }
+      if (e.key === "Escape") { inProgressRef.current = []; setInProgressLen(0); drawScene(); return; }
+      if (e.key === "Enter" && toolRef.current === "polygon") { finishPolygon(); return; }
       if ((e.key === "Delete" || e.key === "Backspace") && selectedPolyIdRef.current) {
         const frame = framesRef.current[frameIdxRef.current];
         if (frame) {
           const list = annsRef.current.get(frame.frameId);
-          if (list) {
-            annsRef.current.set(
-              frame.frameId,
-              list.filter((p) => p.id !== selectedPolyIdRef.current),
-            );
-          }
+          if (list) annsRef.current.set(frame.frameId, list.filter((p) => p.id !== selectedPolyIdRef.current));
         }
-        selectedPolyIdRef.current = null;
-        setHasSelection(false);
-        refreshAnnCount();
-        drawScene();
-        return;
+        selectedPolyIdRef.current = null; setHasSelection(false);
+        refreshAnnCount(); drawScene(); return;
       }
-      if (e.key === "ArrowRight" || e.key === "d") {
-        navigateTo(frameIdxRef.current + 1);
-        return;
+      if (e.key === "ArrowRight" || e.key === "d") { navigateTo(frameIdxRef.current + 1); return; }
+      if (e.key === "ArrowLeft"  || e.key === "a") { navigateTo(frameIdxRef.current - 1); return; }
+      if (e.key === "f" || e.key === "F") { fitToView(); drawScene(); return; }
+      if (e.key === "p" || e.key === "P") { setTool_("polygon"); return; }
+      if (e.key === "s" || e.key === "S") { setTool_("select");  return; }
+      if (e.key === "b" || e.key === "B") { setTool_("brush");   return; }
+      if (e.key === "e" || e.key === "E") { setTool_("eraser");  return; }
+      if (e.key === "l" || e.key === "L") { setTool_("lasso");   return; }
+      if (e.key === "m" || e.key === "M") { toggleMasks(); return; }
+      // Brush size with [ ]
+      if (e.key === "[") {
+        const next = Math.max(1, brushRadiusRef.current - 5);
+        brushRadiusRef.current = next; setBrushRadius(next); return;
       }
-      if (e.key === "ArrowLeft" || e.key === "a") {
-        navigateTo(frameIdxRef.current - 1);
-        return;
+      if (e.key === "]") {
+        const next = Math.min(200, brushRadiusRef.current + 5);
+        brushRadiusRef.current = next; setBrushRadius(next); return;
       }
-      if (e.key === "f" || e.key === "F") {
-        fitToView();
-        drawScene();
-        return;
-      }
-      if (e.key === "p" || e.key === "P") {
-        setTool_("polygon");
-        return;
-      }
-      if (e.ctrlKey && e.key === "s") {
-        e.preventDefault();
-        void handleSaveRef.current();
-        return;
-      }
-      // Class hotkeys 1–8.
+      if (e.ctrlKey && (e.key === "z" || e.key === "Z")) { e.preventDefault(); undo(); return; }
+      if (e.ctrlKey && e.key === "s") { e.preventDefault(); void handleSaveRef.current(); return; }
+      if (e.key === "0") { setClassId_(10); return; }
       const n = parseInt(e.key);
-      if (n >= 1 && n <= 8) {
-        setClassId_(n);
-        return;
-      }
+      if (n >= 1 && n <= 9) { setClassId_(n); return; }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [drawScene, finishPolygon, fitToView, navigateTo, refreshAnnCount, setTool_, setClassId_]);
+  }, [drawScene, finishPolygon, fitToView, navigateTo, refreshAnnCount, setTool_, setClassId_, undo, toggleMasks]);
 
-  // ---- Coordinate transform ----
+  // ---- Coordinate helpers ----
   const screenToImage = useCallback((sx: number, sy: number): Pt => ({
     x: (sx - panRef.current.x) / zoomRef.current,
     y: (sy - panRef.current.y) / zoomRef.current,
   }), []);
+
+  // ---- Pixel mask helpers ----
+  const ensureMaskCanvas = useCallback((frameId: string, cid: number, w: number, h: number): HTMLCanvasElement => {
+    if (!pixelMasksRef.current.has(frameId)) pixelMasksRef.current.set(frameId, new Map());
+    const fm = pixelMasksRef.current.get(frameId)!;
+    if (!fm.has(cid)) {
+      const cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      fm.set(cid, cv);
+    }
+    return fm.get(cid)!;
+  }, []);
+
+  const stampBrush = useCallback((imgPt: Pt, erase: boolean) => {
+    const frame = framesRef.current[frameIdxRef.current];
+    if (!frame) return;
+    const sz = frameSizesRef.current.get(frame.frameId);
+    const w  = sz?.w || frame.width;
+    const h  = sz?.h || frame.height;
+    if (!w || !h) return;
+    const cid = classIdRef.current;
+    const cls = clsById(cid);
+    if (!cls) return;
+    const maskCv = ensureMaskCanvas(frame.frameId, cid, w, h);
+    const ctx    = maskCv.getContext("2d")!;
+    const r      = brushRadiusRef.current;
+    if (erase) {
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.beginPath();
+      ctx.arc(imgPt.x, imgPt.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    } else {
+      const [cr, cg, cb] = hexToRgb(cls.color);
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.85)`;
+      ctx.beginPath();
+      ctx.arc(imgPt.x, imgPt.y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }, [ensureMaskCanvas]);
 
   // ---- Pointer events ----
   const handlePointerDown = useCallback(
@@ -540,7 +728,6 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
 
-      // Middle mouse or Alt+click → pan.
       if (e.button === 1 || (e.button === 0 && e.altKey)) {
         isPanningRef.current = true;
         lastMouseRef.current = { x: sx, y: sy };
@@ -553,21 +740,66 @@ export function SegmentationView({ projectId }: { projectId: string }) {
 
       if (toolRef.current === "crop") {
         isCropDraggingRef.current = true;
-        cropDragStartRef.current = imgPt;
+        cropDragStartRef.current  = imgPt;
         canvas.setPointerCapture(e.pointerId);
         return;
       }
 
+      if (toolRef.current === "brush") {
+        isBrushingRef.current = true;
+        canvas.setPointerCapture(e.pointerId);
+        const frame = framesRef.current[frameIdxRef.current];
+        if (frame) pushUndo(snapshotMask(frame.frameId, classIdRef.current));
+        stampBrush(imgPt, false);
+        drawScene();
+        return;
+      }
+
+      if (toolRef.current === "lasso") {
+        isBrushingRef.current = true;
+        canvas.setPointerCapture(e.pointerId);
+        const frame = framesRef.current[frameIdxRef.current];
+        if (frame) pushUndo(snapshotMask(frame.frameId, classIdRef.current));
+        lassoPathRef.current = [imgPt];
+        drawScene();
+        return;
+      }
+
+      if (toolRef.current === "eraser") {
+        isBrushingRef.current = true;
+        canvas.setPointerCapture(e.pointerId);
+        // Eraser: erase from pixel mask, or if clicking a polygon — delete it.
+        const frame = framesRef.current[frameIdxRef.current];
+        const polygons = frame ? (annsRef.current.get(frame.frameId) ?? []) : [];
+        let hit: string | null = null;
+        for (let i = polygons.length - 1; i >= 0; i--) {
+          if (pointInPoly(polygons[i], imgPt)) { hit = polygons[i].id; break; }
+        }
+        if (hit) {
+          // Clicked inside a polygon — erase (delete) it.
+          if (frame) {
+            const list = annsRef.current.get(frame.frameId);
+            const poly = list?.find((p) => p.id === hit);
+            if (poly) pushUndo({ kind: "poly-remove", frameId: frame.frameId, poly: { ...poly, points: [...poly.points] } });
+            if (list) annsRef.current.set(frame.frameId, list.filter((p) => p.id !== hit));
+          }
+          selectedPolyIdRef.current = null; setHasSelection(false);
+          refreshAnnCount();
+        } else {
+          // Brush-erase from pixel mask.
+          if (frame) pushUndo(snapshotMask(frame.frameId, classIdRef.current));
+          stampBrush(imgPt, true);
+        }
+        drawScene();
+        return;
+      }
+
       if (toolRef.current === "polygon") {
-        // If near the first point (and ≥3 pts drawn), close the polygon.
         if (inProgressRef.current.length >= 3) {
           const first = inProgressRef.current[0];
           const fsx = first.x * zoomRef.current + panRef.current.x;
           const fsy = first.y * zoomRef.current + panRef.current.y;
-          if (Math.hypot(sx - fsx, sy - fsy) < 14) {
-            finishPolygon();
-            return;
-          }
+          if (Math.hypot(sx - fsx, sy - fsy) < 14) { finishPolygon(); return; }
         }
         inProgressRef.current = [...inProgressRef.current, imgPt];
         setInProgressLen(inProgressRef.current.length);
@@ -580,18 +812,14 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         const polygons = frame ? (annsRef.current.get(frame.frameId) ?? []) : [];
         let hit: string | null = null;
         for (let i = polygons.length - 1; i >= 0; i--) {
-          if (pointInPoly(polygons[i], imgPt)) {
-            hit = polygons[i].id;
-            break;
-          }
+          if (pointInPoly(polygons[i], imgPt)) { hit = polygons[i].id; break; }
         }
-        selectedPolyIdRef.current = hit;
-        setHasSelection(hit !== null);
+        selectedPolyIdRef.current = hit; setHasSelection(hit !== null);
         drawScene();
         return;
       }
     },
-    [drawScene, finishPolygon, screenToImage],
+    [drawScene, finishPolygon, pushUndo, refreshAnnCount, screenToImage, snapshotMask, stampBrush],
   );
 
   const handlePointerMove = useCallback(
@@ -603,36 +831,70 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       const sy = e.clientY - rect.top;
 
       if (isPanningRef.current) {
-        panRef.current = {
-          x: panRef.current.x + sx - lastMouseRef.current.x,
-          y: panRef.current.y + sy - lastMouseRef.current.y,
-        };
+        panRef.current = { x: panRef.current.x + sx - lastMouseRef.current.x, y: panRef.current.y + sy - lastMouseRef.current.y };
         lastMouseRef.current = { x: sx, y: sy };
-        drawScene();
-        return;
+        drawScene(); return;
       }
 
       if (isCropDraggingRef.current && cropDragStartRef.current) {
         const imgPt = screenToImage(sx, sy);
         const s = cropDragStartRef.current;
-        const x = Math.min(s.x, imgPt.x);
-        const y = Math.min(s.y, imgPt.y);
-        const w = Math.max(1, Math.abs(imgPt.x - s.x));
-        const h = Math.max(1, Math.abs(imgPt.y - s.y));
-        cropRectRef.current = { x, y, w, h };
-        setHasCrop(true);
-        drawScene();
-        return;
+        cropRectRef.current = { x: Math.min(s.x, imgPt.x), y: Math.min(s.y, imgPt.y), w: Math.max(1, Math.abs(imgPt.x - s.x)), h: Math.max(1, Math.abs(imgPt.y - s.y)) };
+        setHasCrop(true); drawScene(); return;
+      }
+
+      if (isBrushingRef.current) {
+        const imgPt = screenToImage(sx, sy);
+        if (toolRef.current === "lasso") {
+          const lastPt = lassoPathRef.current[lassoPathRef.current.length - 1];
+          if (!lastPt || Math.hypot(imgPt.x - lastPt.x, imgPt.y - lastPt.y) > 2) {
+            lassoPathRef.current.push(imgPt);
+          }
+          drawScene(); return;
+        }
+        const erase = toolRef.current === "eraser";
+        // Don't delete polygons while dragging — only the click does that.
+        stampBrush(imgPt, erase);
+        drawScene(); return;
       }
     },
-    [drawScene, screenToImage],
+    [drawScene, screenToImage, stampBrush],
   );
 
   const handlePointerUp = useCallback(() => {
-    isPanningRef.current = false;
+    isPanningRef.current    = false;
     isCropDraggingRef.current = false;
-    cropDragStartRef.current = null;
-  }, []);
+    cropDragStartRef.current  = null;
+
+    if (toolRef.current === "lasso" && isBrushingRef.current && lassoPathRef.current.length >= 3) {
+      const frame = framesRef.current[frameIdxRef.current];
+      if (frame) {
+        const sz = frameSizesRef.current.get(frame.frameId);
+        const w = sz?.w || frame.width;
+        const h = sz?.h || frame.height;
+        if (w && h) {
+          const cid = classIdRef.current;
+          const cls = clsById(cid);
+          if (cls) {
+            const maskCv = ensureMaskCanvas(frame.frameId, cid, w, h);
+            const mctx = maskCv.getContext("2d")!;
+            const [cr, cg, cb] = hexToRgb(cls.color);
+            mctx.fillStyle = `rgba(${cr},${cg},${cb},0.85)`;
+            mctx.beginPath();
+            const pts = lassoPathRef.current;
+            mctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) mctx.lineTo(pts[i].x, pts[i].y);
+            mctx.closePath();
+            mctx.fill();
+          }
+        }
+      }
+      lassoPathRef.current = [];
+      drawScene();
+    }
+
+    isBrushingRef.current = false;
+  }, [drawScene, ensureMaskCanvas]);
 
   const handleDoubleClick = useCallback(() => {
     if (toolRef.current === "polygon") finishPolygon();
@@ -647,11 +909,8 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-      const newZ = Math.max(0.04, Math.min(32, zoomRef.current * factor));
-      panRef.current = {
-        x: sx - (sx - panRef.current.x) * (newZ / zoomRef.current),
-        y: sy - (sy - panRef.current.y) * (newZ / zoomRef.current),
-      };
+      const newZ   = Math.max(0.04, Math.min(32, zoomRef.current * factor));
+      panRef.current = { x: sx - (sx - panRef.current.x) * (newZ / zoomRef.current), y: sy - (sy - panRef.current.y) * (newZ / zoomRef.current) };
       zoomRef.current = newZ;
       setZoomPct(Math.round(newZ * 100));
       drawScene();
@@ -661,251 +920,174 @@ export function SegmentationView({ projectId }: { projectId: string }) {
 
   // ---- Crop actions ----
   const clearCrop = useCallback(() => {
-    cropRectRef.current = null;
-    cropZoomRef.current = false;
-    setHasCrop(false);
-    setCropZoom(false);
-    fitToView();
-    drawScene();
+    cropRectRef.current = null; cropZoomRef.current = false;
+    setHasCrop(false); setCropZoom(false); fitToView(); drawScene();
   }, [fitToView, drawScene]);
 
   const toggleCropZoom = useCallback(() => {
     const next = !cropZoomRef.current;
-    cropZoomRef.current = next;
-    setCropZoom(next);
-    fitToView();
-    drawScene();
+    cropZoomRef.current = next; setCropZoom(next); fitToView(); drawScene();
   }, [fitToView, drawScene]);
 
-  // ---- Delete selected polygon (toolbar button handler) ----
+
+  // ---- Delete selected polygon ----
   const deleteSelected = useCallback(() => {
     const frame = framesRef.current[frameIdxRef.current];
     if (frame) {
       const list = annsRef.current.get(frame.frameId);
-      if (list) {
-        annsRef.current.set(
-          frame.frameId,
-          list.filter((p) => p.id !== selectedPolyIdRef.current),
-        );
-      }
+      const poly = list?.find((p) => p.id === selectedPolyIdRef.current);
+      if (poly) pushUndo({ kind: "poly-remove", frameId: frame.frameId, poly: { ...poly, points: [...poly.points] } });
+      if (list) annsRef.current.set(frame.frameId, list.filter((p) => p.id !== selectedPolyIdRef.current));
     }
-    selectedPolyIdRef.current = null;
-    setHasSelection(false);
-    refreshAnnCount();
-    drawScene();
+    selectedPolyIdRef.current = null; setHasSelection(false);
+    refreshAnnCount(); drawScene();
+  }, [drawScene, pushUndo, refreshAnnCount]);
+
+  // ---- Copy annotations from any frame index ----
+  const copyFromFrame = useCallback((srcIdx: number) => {
+    const currIdx  = frameIdxRef.current;
+    const srcFrame = framesRef.current[srcIdx];
+    const currFrame = framesRef.current[currIdx];
+    if (!srcFrame || !currFrame || srcIdx === currIdx) return;
+
+    const srcPolys = annsRef.current.get(srcFrame.frameId) ?? [];
+    if (srcPolys.length) {
+      const cloned = srcPolys.map((p) => ({ ...p, id: uid(), points: [...p.points] }));
+      annsRef.current.set(currFrame.frameId, cloned);
+    }
+
+    const srcMasks = pixelMasksRef.current.get(srcFrame.frameId);
+    if (srcMasks) {
+      const newMasks = new Map<number, HTMLCanvasElement>();
+      for (const [cid, srcCv] of srcMasks) {
+        const cv = document.createElement("canvas");
+        cv.width = srcCv.width; cv.height = srcCv.height;
+        cv.getContext("2d")!.drawImage(srcCv, 0, 0);
+        newMasks.set(cid, cv);
+      }
+      pixelMasksRef.current.set(currFrame.frameId, newMasks);
+    }
+
+    refreshAnnCount(); drawScene();
   }, [drawScene, refreshAnnCount]);
+
+  // ---- Auto-annotate duodenal wall by color range ----
+  const autoDuodenalWall = useCallback(async () => {
+    const frame = framesRef.current[frameIdxRef.current];
+    if (!frame) return;
+    const sz = frameSizesRef.current.get(frame.frameId);
+    const w  = sz?.w || frame.width;
+    const h  = sz?.h || frame.height;
+    if (!w || !h) return;
+    setAutoDwBusy(true);
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise<void>((res, rej) => {
+        img.onload  = () => res();
+        img.onerror = () => rej(new Error("Frame load failed"));
+        img.src = frame.url;
+      });
+      const offscreen = document.createElement("canvas");
+      offscreen.width = w; offscreen.height = h;
+      const octx = offscreen.getContext("2d")!;
+      octx.drawImage(img, 0, 0, w, h);
+      const imageData = octx.getImageData(0, 0, w, h);
+      const data = imageData.data;
+
+      const dwCls   = CLASSES.find((c) => c.name === "DUODENAL_WALL")!;
+      const [dr, dg, db] = hexToRgb(dwCls.color);
+      const maskCv  = ensureMaskCanvas(frame.frameId, dwCls.id, w, h);
+      const mctx    = maskCv.getContext("2d")!;
+      const maskImg = mctx.createImageData(w, h);
+      const md      = maskImg.data;
+
+      for (let i = 0; i < data.length; i += 4) {
+        if (isDuodenalWallPixel(data[i], data[i + 1], data[i + 2])) {
+          md[i] = dr; md[i + 1] = dg; md[i + 2] = db; md[i + 3] = 217;
+        }
+      }
+      mctx.putImageData(maskImg, 0, 0);
+      drawScene();
+    } catch {
+      // Silently ignore (crossOrigin or canvas taint issues)
+    } finally {
+      setAutoDwBusy(false);
+    }
+  }, [drawScene, ensureMaskCanvas]);
+
+
+  // ---- Clear current class pixel mask on current frame ----
+  const clearCurrentClassMask = useCallback(() => {
+    const frame = framesRef.current[frameIdxRef.current];
+    if (!frame) return;
+    const fm = pixelMasksRef.current.get(frame.frameId);
+    if (!fm) return;
+    const cv = fm.get(classIdRef.current);
+    if (cv) {
+      pushUndo(snapshotMask(frame.frameId, classIdRef.current));
+      cv.getContext("2d")!.clearRect(0, 0, cv.width, cv.height);
+    }
+    drawScene();
+  }, [drawScene, pushUndo, snapshotMask]);
 
   // ---- Render ----
   if (loading) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-          color: "#e4e9f0",
-        }}
-      >
-        Loading frames…
-      </div>
-    );
+    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#e4e9f0" }}>Loading frames…</div>;
   }
   if (error) {
     return <div style={{ padding: 20, color: "#f87171" }}>Error loading frames: {error}</div>;
   }
 
   const currentFrame = framesRef.current[frameIdx];
-  const cursorStyle = tool === "crop" || tool === "polygon" ? "crosshair" : "default";
+  const cursorStyle  = (tool === "polygon" || tool === "crop" || tool === "brush" || tool === "eraser" || tool === "lasso") ? "crosshair" : "default";
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        background: "#0d1520",
-        color: "#e4e9f0",
-      }}
-    >
-      {/* ---- Toolbar ---- */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "5px 10px",
-          borderBottom: "1px solid #1e2d40",
-          flexShrink: 0,
-          flexWrap: "wrap",
-        }}
-      >
-        {/* Tool buttons */}
-        <div style={{ display: "flex", gap: 3 }}>
-          <Btn active={tool === "polygon"} onClick={() => setTool_("polygon")} title="Polygon tool [P]">
-            Poly
-          </Btn>
-          <Btn active={tool === "select"} onClick={() => setTool_("select")} title="Select + delete tool">
-            Sel
-          </Btn>
-          <Btn active={tool === "crop"} onClick={() => setTool_("crop")} title="Draw crop region">
-            Crop
-          </Btn>
-          {hasCrop && (
-            <>
-              <Btn active={cropZoom} onClick={toggleCropZoom} title="Zoom to crop rectangle">
-                Zoom crop
-              </Btn>
-              <Btn active={false} onClick={clearCrop} title="Clear crop">
-                ✕ crop
-              </Btn>
-            </>
-          )}
-        </div>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0d1520", color: "#e4e9f0" }}>
 
-        <Sep />
-
-        {/* Class selector */}
-        {CLASSES.map((c) => {
-          const active = classId === c.id;
-          const light = clsLuminance(c) > 140;
-          return (
-            <button
-              key={c.id}
-              title={`${c.name} [${c.id}]`}
-              onClick={() => setClassId_(c.id)}
-              style={{
-                padding: "2px 7px",
-                minWidth: 32,
-                background: active ? c.color : "transparent",
-                border: `1.5px solid ${c.color}`,
-                color: active ? (light ? "#000" : "#fff") : c.color,
-                borderRadius: 4,
-                cursor: "pointer",
-                fontWeight: 700,
-                fontSize: 11,
-              }}
-            >
-              {c.abbr}
-            </button>
-          );
-        })}
-
-        {hasSelection && (
-          <>
-            <Sep />
-            <span style={{ fontSize: 11, color: "#94a3b8" }}>1 selected</span>
-            <button
-              style={{ fontSize: 11, padding: "2px 8px", background: "#450a0a", borderColor: "#f87171", color: "#fca5a5" }}
-              onClick={deleteSelected}
-              title="Delete selected polygon [Del]"
-            >
-              Delete
-            </button>
-          </>
-        )}
-
-        <div style={{ flex: 1 }} />
-
-        {/* Frame counter + zoom */}
-        <span style={{ fontSize: 12, color: "#64748b" }}>
-          {frames.length > 0 ? `${frameIdx + 1} / ${frames.length}` : "No frames"}
-        </span>
-        <span style={{ fontSize: 11, color: "#475569" }}>{zoomPct}%</span>
+      {/* ---- Upper toolbar (fixed, not floating) ---- */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", borderBottom: "1px solid #1e2d40", flexShrink: 0, fontSize: 11 }}>
         <button
-          className="secondary"
-          style={{ fontSize: 11, padding: "2px 8px" }}
-          onClick={() => {
-            fitToView();
-            drawScene();
-          }}
-          title="Fit to window [F]"
+          onClick={() => void autoDuodenalWall()}
+          disabled={autoDwBusy || !currentFrame}
+          title="Auto-annotate reddish/pinkish pixels as Duodenal Wall (editable with brush/eraser)"
+          style={{ fontSize: 11, padding: "2px 10px", background: autoDwBusy ? "#1a2a1a" : undefined }}
         >
-          Fit
+          {autoDwBusy ? "Auto DW…" : "Auto DW"}
         </button>
-
-        <Sep />
-
-        {/* Save */}
-        {saveMsg && (
-          <span
-            style={{
-              fontSize: 12,
-              color: saveMsg.startsWith("Error") ? "#f87171" : "#4ade80",
-            }}
-          >
-            {saveMsg}
-          </span>
-        )}
-        <button onClick={() => void handleSave()} disabled={saving} title="Save annotations [Ctrl+S]">
-          {saving ? "Saving…" : "💾 Save"}
-        </button>
+        <span style={{ color: "#2d3f57", fontSize: 10 }}>
+          Paints reddish-hued pixels as DW class mask · refine with Brush / Eraser tools
+        </span>
       </div>
 
       {/* ---- Main area ---- */}
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Frame list sidebar */}
-        <div
-          style={{
-            width: 180,
-            flexShrink: 0,
-            borderRight: "1px solid #1e2d40",
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
+        {/* Frame list sidebar (left) */}
+        <div style={{ width: 200, flexShrink: 0, borderRight: "1px solid #1e2d40", overflowY: "auto", display: "flex", flexDirection: "column" }}>
           {frames.length === 0 ? (
-            <div style={{ padding: 12, color: "#475569", fontSize: 12, lineHeight: 1.5 }}>
-              No frames found.
-              <br />
-              Run Intake first.
-            </div>
+            <div style={{ padding: 12, color: "#475569", fontSize: 12, lineHeight: 1.5 }}>No frames found.<br />Run Intake &amp; Dedup first.</div>
           ) : (
             frames.map((f, i) => {
-              const hasAnns = (annsRef.current.get(f.frameId)?.length ?? 0) > 0;
+              const hasAnns   = (annsRef.current.get(f.frameId)?.length ?? 0) > 0;
+              const hasMasks  = (pixelMasksRef.current.get(f.frameId)?.size ?? 0) > 0;
+              const framePhase = phasesRef.current.get(f.frameId);
+              const active = i === frameIdx;
               return (
-                <button
-                  key={f.frameId}
-                  onClick={() => navigateTo(i)}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                    padding: "5px 8px",
-                    textAlign: "left",
-                    background: i === frameIdx ? "#1a3050" : "transparent",
-                    border: "none",
-                    borderBottom: "1px solid #111a26",
-                    color: i === frameIdx ? "#e4e9f0" : "#6b7e94",
-                    cursor: "pointer",
-                    fontSize: 11,
-                    flexShrink: 0,
-                  }}
-                >
-                  <span style={{ color: "#2d3f57", width: 30, textAlign: "right", flexShrink: 0 }}>
-                    {i + 1}
-                  </span>
-                  <span
-                    style={{
-                      flex: 1,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {f.name}
-                  </span>
-                  {hasAnns && (
-                    <span style={{ color: "#4ade80", fontSize: 8, flexShrink: 0 }}>●</span>
-                  )}
+                <button key={f.frameId} onClick={() => navigateTo(i)} style={{ display: "flex", flexDirection: "column", padding: 0, textAlign: "left", background: active ? "#1a3050" : "transparent", border: "none", borderBottom: `1px solid ${active ? "#2a4a70" : "#111a26"}`, outline: active ? "1.5px solid #3b6fa8" : "none", outlineOffset: -1, color: active ? "#e4e9f0" : "#6b7e94", cursor: "pointer", flexShrink: 0 }}>
+                  <img src={f.url} loading="lazy" style={{ width: "100%", height: 52, objectFit: "cover", borderRadius: "2px 2px 0 0", display: "block" }} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 11 }}>
+                    <span style={{ color: "#2d3f57", width: 30, textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                    {framePhase && <span title={framePhase} style={{ color: phaseColor(framePhase), fontSize: 7, flexShrink: 0 }}>◆</span>}
+                    {(hasAnns || hasMasks) && <span style={{ color: "#4ade80", fontSize: 8, flexShrink: 0 }}>●</span>}
+                  </div>
                 </button>
               );
             })
           )}
         </div>
 
-        {/* Canvas */}
+        {/* Canvas (middle — full canvas, no overlapping elements) */}
         <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
           <canvas
             ref={canvasRef}
@@ -917,78 +1099,229 @@ export function SegmentationView({ projectId }: { projectId: string }) {
             onWheel={handleWheel}
           />
           {inProgressLen > 0 && (
-            <div
-              style={{
-                position: "absolute",
-                bottom: 14,
-                left: "50%",
-                transform: "translateX(-50%)",
-                background: "rgba(0,0,0,0.78)",
-                color: "#e4e9f0",
-                padding: "5px 14px",
-                borderRadius: 8,
-                fontSize: 11,
-                pointerEvents: "none",
-                whiteSpace: "nowrap",
-              }}
-            >
+            <div style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.78)", color: "#e4e9f0", padding: "5px 14px", borderRadius: 8, fontSize: 11, pointerEvents: "none", whiteSpace: "nowrap" }}>
               {inProgressLen} pts · click near start or double-click to close · Esc to cancel
             </div>
           )}
         </div>
+
+        {/* Annotation panel (right sidebar — fixed, never overlaps canvas) */}
+        <div style={{ width: 210, flexShrink: 0, borderLeft: "1px solid #1e2d40", overflowY: "auto", display: "flex", flexDirection: "column", background: "#0a121c" }}>
+          <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
+            {/* Tool buttons — Draw section */}
+            <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Draw</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
+              <ToolBtn active={tool === "polygon"} onClick={() => setTool_("polygon")} icon="◇" label="Polygon" title="Polygon — click to add points, double-click to close [P]" />
+              <ToolBtn active={tool === "brush"}   onClick={() => setTool_("brush")}   icon="⬤" label="Brush"   title="Brush — click-drag to paint [B]" />
+              <ToolBtn active={tool === "lasso"}   onClick={() => setTool_("lasso")}   icon="⊂" label="Lasso"   title="Lasso — drag to draw freehand fill region [L]" />
+            </div>
+
+            {/* Polygon hint (under Draw section) */}
+            {tool === "polygon" && (
+              <div style={{ fontSize: 10, color: "#334155", lineHeight: 1.4 }}>
+                Click to add points · double-click or click first point to close
+              </div>
+            )}
+
+            {/* Brush/lasso size (under Draw section) */}
+            {(tool === "brush" || tool === "lasso") && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 10, color: "#64748b", flexShrink: 0 }}>Size</span>
+                <input
+                  type="range" min={1} max={200} value={brushRadius}
+                  onChange={(ev) => { const v = Number(ev.target.value); brushRadiusRef.current = v; setBrushRadius(v); }}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ fontSize: 10, color: "#94a3b8", minWidth: 24 }}>{brushRadius}</span>
+              </div>
+            )}
+
+            {/* Tool buttons — Erase section */}
+            <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4, marginTop: 6 }}>Erase</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              <ToolBtn active={tool === "eraser"} onClick={() => setTool_("eraser")} icon="○" label="Circle" title="Eraser — drag to erase brush strokes [E]" />
+              <ToolBtn active={false} onClick={clearCurrentClassMask} icon="✕" label="Clear" title="Clear all brush strokes for current class on this frame" danger />
+            </div>
+
+            {/* Eraser size (under Erase section) */}
+            {tool === "eraser" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 10, color: "#64748b", flexShrink: 0 }}>Size</span>
+                <input
+                  type="range" min={1} max={200} value={brushRadius}
+                  onChange={(ev) => { const v = Number(ev.target.value); brushRadiusRef.current = v; setBrushRadius(v); }}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ fontSize: 10, color: "#94a3b8", minWidth: 24 }}>{brushRadius}</span>
+              </div>
+            )}
+
+            {/* Other tools — Select + Crop */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
+              <ToolBtn active={tool === "select"} onClick={() => setTool_("select")} icon="↖" label="Select" title="Select polygon [S]" />
+              <ToolBtn active={tool === "crop"}   onClick={() => setTool_("crop")}   icon="▣" label="Crop"   title="Drag to set crop region" />
+            </div>
+
+            {hasCrop && (
+              <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                <Btn active={cropZoom} onClick={toggleCropZoom} title="Zoom to crop">Zoom crop</Btn>
+                <Btn active={false} onClick={clearCrop} title="Clear crop">✕ crop</Btn>
+              </div>
+            )}
+
+            <div style={{ marginTop: 6 }}>
+              <Btn active={showMasks} onClick={toggleMasks} title="Toggle mask visibility [M]">👁 Masks</Btn>
+            </div>
+
+            <PanelDivider />
+
+            {/* Class grid — 5 per row */}
+            <div style={{ fontSize: 10, color: "#475569", marginBottom: 2 }}>Class</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 3 }}>
+              {CLASSES.map((c) => {
+                const active = classId === c.id;
+                const light  = clsLuminance(c) > 140;
+                return (
+                  <button key={c.id} title={`${c.name} [${c.id === 10 ? 0 : c.id}]`} onClick={() => setClassId_(c.id)} style={{ padding: "3px 2px", background: active ? c.color : "transparent", border: `1.5px solid ${c.color}`, color: active ? (light ? "#000" : "#fff") : c.color, borderRadius: 4, cursor: "pointer", fontWeight: 700, fontSize: 10, textAlign: "center" }}>
+                    {c.abbr}
+                  </button>
+                );
+              })}
+            </div>
+
+            <PanelDivider />
+
+            {/* Phase selector */}
+            <div style={{ fontSize: 10, color: "#475569", marginBottom: 2 }}>Phase</div>
+            <select value={currentPhase} onChange={(e) => setPhase_(e.target.value)} style={{ fontSize: 11, padding: "3px 6px", background: "#0d1a2a", color: currentPhase ? "#e4e9f0" : "#475569", border: "1px solid #1e2d40", borderRadius: 4, cursor: "pointer", width: "100%" }}>
+              <option value="">— phase —</option>
+              {PHASES.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+
+            <PanelDivider />
+
+            {/* Copy from frame # */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 10, color: "#64748b" }}>Copy annotations from frame</span>
+              <div style={{ display: "flex", gap: 4 }}>
+                <input
+                  type="number" min={1} max={frames.length}
+                  value={copyFromInput}
+                  onChange={(ev) => setCopyFromInput(ev.target.value)}
+                  placeholder={`1–${frames.length}`}
+                  style={{ flex: 1, fontSize: 11, padding: "2px 6px", background: "#0d1a2a", color: "#e4e9f0", border: "1px solid #1e2d40", borderRadius: 4 }}
+                />
+                <Btn
+                  active={false}
+                  onClick={() => {
+                    const n = parseInt(copyFromInput);
+                    if (!isNaN(n) && n >= 1 && n <= frames.length) copyFromFrame(n - 1);
+                  }}
+                  title="Copy polygons + masks from that frame into this one"
+                >
+                  Copy
+                </Btn>
+              </div>
+              {frameIdx > 0 && (
+                <button className="secondary" onClick={() => copyFromFrame(frameIdx - 1)} style={{ fontSize: 11, padding: "2px 8px" }} title="Quick-copy from previous frame">
+                  ← Copy prev
+                </button>
+              )}
+            </div>
+
+            {/* Delete selected */}
+            {hasSelection && (
+              <>
+                <PanelDivider />
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 10, color: "#94a3b8" }}>1 selected</span>
+                  <button style={{ fontSize: 11, padding: "2px 8px", background: "#450a0a", borderColor: "#f87171", color: "#fca5a5" }} onClick={deleteSelected} title="Delete selected polygon [Del]">Delete</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* ---- Status bar ---- */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 14,
-          padding: "3px 10px",
-          borderTop: "1px solid #1e2d40",
-          flexShrink: 0,
-          fontSize: 11,
-          color: "#3d5068",
-        }}
-      >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 10px", borderTop: "1px solid #1e2d40", flexShrink: 0, fontSize: 11, color: "#3d5068" }}>
+        {saveMsg && <span style={{ color: saveMsg.startsWith("Error") ? "#f87171" : "#4ade80" }}>{saveMsg}</span>}
+        <button onClick={() => void handleSave()} disabled={saving} title="Save annotations [Ctrl+S]" style={{ fontSize: 11, padding: "2px 8px" }}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+
+        <div style={{ width: 1, height: 16, background: "#1e2d40", flexShrink: 0 }} />
+
         {currentFrame && <span>{currentFrame.name}</span>}
-        {currentFrame && currentFrame.width > 0 && (
-          <span>{currentFrame.width}×{currentFrame.height}</span>
-        )}
-        <span>
-          {annCount} polygon{annCount !== 1 ? "s" : ""} on this frame
-        </span>
+        {currentFrame && currentFrame.width > 0 && <span style={{ color: "#2d3f57" }}>{currentFrame.width}×{currentFrame.height}</span>}
+        <span>{annCount} polygon{annCount !== 1 ? "s" : ""}</span>
+
         <div style={{ flex: 1 }} />
-        <span>P=poly · S=select · 1–8=class · ←→ / AD=navigate · F=fit · Del=delete · Ctrl+S=save</span>
+
+        <span style={{ color: "#475569" }}>{zoomPct}%</span>
+        <button className="secondary" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => { fitToView(); drawScene(); }} title="Fit to window [F]">Fit</button>
+        <button className="secondary" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => {
+          const canvas = canvasRef.current; const img = imageRef.current;
+          if (!canvas || !img) return;
+          const dpr = dprRef.current;
+          zoomRef.current = 1;
+          panRef.current = { x: (canvas.width / dpr - img.naturalWidth) / 2, y: (canvas.height / dpr - img.naturalHeight) / 2 };
+          setZoomPct(100); drawScene();
+        }} title="Zoom to actual pixels (1:1)">1:1</button>
+        <span style={{ color: "#2d3f57" }}>{frames.length > 0 ? `${frameIdx + 1} / ${frames.length}` : "—"}</span>
+
+        <div style={{ width: 1, height: 16, background: "#1e2d40", flexShrink: 0 }} />
+        <span style={{ color: "#1e2d40" }}>P=poly · B=brush · L=lasso · E=erase · S=sel · M=masks · 1–9,0=class · A/D/←→=nav · [/]=size · F=fit · Ctrl+Z=undo · Ctrl+S=save</span>
       </div>
     </div>
   );
 }
 
-// ---- Mini helpers for toolbar ----
-function Btn({
-  active,
-  onClick,
-  title,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  title?: string;
-  children: ReactNode;
-}) {
+function Btn({ active, onClick, title, children }: { active: boolean; onClick: () => void; title?: string; children: ReactNode }) {
   return (
-    <button
-      className={active ? "" : "secondary"}
-      onClick={onClick}
-      title={title}
-      style={{ fontSize: 11, padding: "2px 8px" }}
-    >
+    <button className={active ? "" : "secondary"} onClick={onClick} title={title} style={{ fontSize: 11, padding: "2px 8px" }}>
       {children}
     </button>
   );
 }
 
-function Sep() {
-  return <div style={{ width: 1, height: 20, background: "#1e2d40", flexShrink: 0 }} />;
+function PanelDivider() {
+  return <div style={{ height: 1, background: "#1e2d40", margin: "1px 0" }} />;
+}
+
+function ToolBtn({ active, onClick, icon, label, title, danger }: { active: boolean; onClick: () => void; icon: string; label: string; title?: string; danger?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        flex: 1,
+        padding: "10px 4px",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 4,
+        background: active ? "#1a3050" : danger ? "rgba(180,30,30,0.2)" : "transparent",
+        border: `1.5px solid ${active ? "#3b6fa8" : danger ? "#9f1239" : "#1e2d40"}`,
+        borderRadius: 6,
+        color: active ? "#e4e9f0" : danger ? "#fca5a5" : "#6b7e94",
+        cursor: "pointer",
+        outline: active ? "1.5px solid #3b6fa8" : "none",
+        outlineOffset: -1,
+      }}
+    >
+      <span style={{ fontSize: 20, lineHeight: 1 }}>{icon}</span>
+      <span style={{ fontSize: 10, fontWeight: 500 }}>{label}</span>
+    </button>
+  );
+}
+
+function phaseColor(phase: string): string {
+  switch (phase) {
+    case "pre-cannulation": return "#64748b";
+    case "cannulation":     return "#3b82f6";
+    case "sphincterotomy":  return "#f97316";
+    case "exiting":         return "#22c55e";
+    default:                return "#475569";
+  }
 }

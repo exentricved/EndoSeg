@@ -27,7 +27,7 @@ console.log(`[endoseg] vite dev server on ${url}`);
 
 await buildMain();
 
-const child = spawn(electron, ["."], {
+const child = spawn(electron, [".", "--remote-debugging-port=9222", "--remote-allow-origins=*"], {
   stdio: "inherit",
   env: { ...process.env, VITE_DEV_SERVER_URL: url },
 });

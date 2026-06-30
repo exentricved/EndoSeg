@@ -196,8 +196,27 @@ type HostedReviewConfig = {
   manifest: HostedAnnotatorManifest;
   onSubmitReview: (output: HostedAnnotatorOutput) => Promise<void> | void;
 };
+/** A project frame fed in by the EndoSeg host (served via endoseg-frame://). */
+export type EndoSegEmbedFrame = { frameId: string; name: string; url: string };
+/** EndoSeg-embed data wiring: frames in, masks/annotations out (over Electron IPC). */
+export type EndoSegEmbed = {
+  projectId: string;
+  frames: EndoSegEmbedFrame[];
+  /** Previously saved annotation snapshot (ercp-papilla-v1) to restore, if any. */
+  initialSnapshot?: unknown;
+  /** Persist the current annotation snapshot back to the project. */
+  onSave: (snapshot: unknown) => Promise<void> | void;
+};
 type AppProps = {
   hostedReview?: HostedReviewConfig;
+  /**
+   * EndoSeg embed mode: render the annotator inside the EndoSeg desktop app as a
+   * mounted view rather than a standalone page. Sizes to its parent (100%) instead
+   * of the browser viewport, keeping the full UI. `embedded` alone is the Phase-1
+   * manual-load mode; pass `endoseg` to also wire frames/masks via the host.
+   */
+  embedded?: boolean;
+  endoseg?: EndoSegEmbed;
 };
 
 const PEN_SIZE = 1;       // 1px pen
@@ -342,7 +361,15 @@ function fileToDataURL(file: File): Promise<string> {
   return new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(file); });
 }
 function dataURLToImage(url: string): Promise<HTMLImageElement> {
-  return new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.src = url; });
+  return new Promise((res, rej) => {
+    const i = new Image();
+    // Allow cross-origin frames (EndoSeg's endoseg-frame:// protocol sends ACAO:*)
+    // to be drawn to a canvas without tainting it. Ignored for data: URLs.
+    i.crossOrigin = "anonymous";
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error(`image load failed: ${url.slice(0, 80)}`));
+    i.src = url;
+  });
 }
 function makeThumb(img: HTMLImageElement, maxW: number) {
   const c = document.createElement("canvas");
@@ -548,14 +575,17 @@ function eraseConnectedComponent(label: LabelSpec, path: Pt[]) {
 }
 
 /* -------------------- App -------------------- */
-export default function App({ hostedReview }: AppProps = {}) {
+export default function App({ hostedReview, embedded, endoseg }: AppProps = {}) {
   const isHostedReview = Boolean(hostedReview);
+  // Both hosted-review and EndoSeg-embed size the annotator to its parent container
+  // (100%) instead of the browser viewport.
+  const sizeToParent = isHostedReview || Boolean(embedded) || Boolean(endoseg);
   // global CSS
   useEffect(() => {
     const style = document.createElement("style");
     style.innerHTML = `
       :root { --app-vh: 100dvh; }
-      html, body, #root { height: ${isHostedReview ? "100%" : "calc(var(--app-vh, 100dvh))"}; width: 100%; }
+      html, body, #root { height: ${sizeToParent ? "100%" : "calc(var(--app-vh, 100dvh))"}; width: 100%; }
       body { margin: 0; overflow: hidden; }
       * { box-sizing: border-box; }
       .no-text-select, .no-text-select *:not(input):not(textarea) {
@@ -582,7 +612,7 @@ export default function App({ hostedReview }: AppProps = {}) {
       window.visualViewport?.removeEventListener('resize', onVV);
       document.head.removeChild(style);
     };
-  }, [isHostedReview]);
+  }, [sizeToParent]);
   // Ref for project open input (for iPadOS file picker)
   const openProjectInputRef = useRef<HTMLInputElement>(null);
 
@@ -611,6 +641,7 @@ export default function App({ hostedReview }: AppProps = {}) {
   const [showCompatibilityBanner, setShowCompatibilityBanner] = useState<boolean>(false);
   const [isPhone, setIsPhone] = useState<boolean>(false);
   const [hostedSubmitBusy, setHostedSubmitBusy] = useState<boolean>(false);
+  const [endosegSaving, setEndosegSaving] = useState<boolean>(false);
   const projectRef = useRef(project);
   const projectNameRef = useRef(projectName);
   const compatibilityModeRef = useRef<CompatibilityMode>(compatibilityMode);
@@ -1175,6 +1206,10 @@ export default function App({ hostedReview }: AppProps = {}) {
     buttons.push(fixedBtn(ICON_BTN_W)); // Zoom out
     buttons.push(fixedBtn(ICON_BTN_W)); // Zoom in
     buttons.push(fixedBtn(ICON_BTN_W)); // Reset
+    // Custom crop controls (worst-case: include the conditional "clear" button)
+    buttons.push(measureBtn(' Drawing…'));   // Crop define (longest label)
+    buttons.push(measureBtn(' Zoom crop'));  // Zoom-to-crop toggle
+    buttons.push(measureBtn(' Crop'));       // Clear crop (shown only when a crop exists)
     // Settings
     buttons.push(measureBtn(' Settings'));
 
@@ -1315,6 +1350,21 @@ export default function App({ hostedReview }: AppProps = {}) {
   const fitRef = useRef<{ baseScale: number; offX: number; offY: number }>({ baseScale: 1, offX: 0, offY: 0 });
   const zoomRef = useRef<number>(1);
   const panRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 }); // in image pixels
+
+  // Custom crop region (non-destructive view crop) — a rectangle in *image* pixels.
+  // The full frame is always kept; this only controls how the view is fit/zoomed.
+  // `croppingMode` = user is dragging to define the rectangle; `cropZoom` = fit the
+  // view to the crop instead of the whole frame. Refs mirror state so resetView()
+  // (called from ResizeObserver/intervals, outside React render) reads the latest.
+  type CropRect = { x: number; y: number; w: number; h: number };
+  const [cropRect, setCropRect] = useState<CropRect | null>(null);
+  const [cropZoom, setCropZoom] = useState<boolean>(false);
+  const [croppingMode, setCroppingMode] = useState<boolean>(false);
+  const cropRectRef = useRef<CropRect | null>(null);
+  const cropZoomRef = useRef<boolean>(false);
+  const cropDragRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  useEffect(() => { cropRectRef.current = cropRect; }, [cropRect]);
+  useEffect(() => { cropZoomRef.current = cropZoom; }, [cropZoom]);
   const stageMetricsRef = useRef<{ cssW: number; cssH: number; dpr: number }>({ cssW: 0, cssH: 0, dpr: 0 });
   const strokeTransformRef = useRef<StrokeTransform | null>(null);
   const activeStrokeLabelRef = useRef<LabelSpec | null>(null);
@@ -1409,6 +1459,83 @@ export default function App({ hostedReview }: AppProps = {}) {
     };
   }, [hostedReview]);
 
+  // EndoSeg-embed: load the project's frames (served via endoseg-frame://) and
+  // restore any previously saved masks/annotations. Mirrors the hosted-review path.
+  useEffect(() => {
+    if (!endoseg) return;
+    // NOTE: no persistent "already loaded" ref guard here — under React StrictMode
+    // that pattern returns early on the second (kept) invocation while the first
+    // run is cancelled, leaving the project empty. The `cancelled` flag below is
+    // the StrictMode-safe way to dedupe.
+
+    // Index a restorable snapshot's frames by name for quick lookup.
+    const snap = endoseg.initialSnapshot as { frames?: any[] } | undefined;
+    const snapByName = new Map<string, any>();
+    if (snap?.frames) for (const f of snap.frames) snapByName.set(String(f.name), f);
+
+    let cancelled = false;
+    void (async () => {
+      const nextImages: ImageItem[] = [];
+      for (const frame of endoseg.frames) {
+        // Dimensions come from the host (PNG header) so we don't decode 100s of
+        // full-res frames upfront; fall back to a decode only if they're missing.
+        let w = (frame as { width?: number }).width ?? 0;
+        let h = (frame as { height?: number }).height ?? 0;
+        if (!w || !h) {
+          try {
+            const img = await dataURLToImage(frame.url);
+            w = img.naturalWidth; h = img.naturalHeight;
+          } catch {
+            console.warn("EndoSeg embed: could not size frame", frame.name);
+            continue;
+          }
+        }
+        const labels = defaultLabels();
+        labels.forEach(l => ensureCanvasSize(l, w, h));
+        const restore = snapByName.get(frame.name);
+        if (restore?.label_masks && typeof restore.label_masks === "object") {
+          for (const [labelId, dataUrl] of Object.entries(restore.label_masks as Record<string, string>)) {
+            const lab = labels.find(l => String(l.id) === labelId);
+            if (lab?.ctx && typeof dataUrl === "string") {
+              try {
+                const mimg = await dataURLToImage(dataUrl);
+                lab.ctx.drawImage(mimg, 0, 0);
+                lab.rev = (lab.rev || 0) + 1;
+              } catch {
+                console.warn("EndoSeg embed: could not restore mask", frame.name, labelId);
+              }
+            }
+          }
+        }
+        nextImages.push({
+          id: frame.frameId,
+          name: frame.name,
+          w, h,
+          baseURL: frame.url,
+          thumbURL: frame.url,
+          station: restore?.station ?? "",
+          labels,
+          history: [],
+          redo: [],
+          annotations: restore?.annotations ?? [],
+          keypoints: restore?.keypoints ?? [],
+          metadata: restore?.frame_metadata ?? makeDefaultFrameMetadata(),
+        });
+      }
+      if (cancelled) return;
+      setCompatibilityMode(null);
+      setShowCompatibilityBanner(false);
+      setProject({ images: nextImages, current: 0, opened: true });
+      setActiveId(1);
+      setSelectedIds(new Set());
+      setHasUnsaved(false);
+      resetView();
+      scheduleRedraw();
+    })();
+
+    return () => { cancelled = true; };
+  }, [endoseg]);
+
   // import images
   async function onPickImages(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files; if (!files || !files.length) return;
@@ -1436,6 +1563,9 @@ export default function App({ hostedReview }: AppProps = {}) {
   useEffect(() => {
     const imgItem = current; if (!imgItem) return;
     const img = new Image();
+    // Cross-origin frames (endoseg-frame://) must load anonymously so the base
+    // canvas isn't tainted (the mask/redraw pipeline reads pixels back).
+    img.crossOrigin = "anonymous";
     img.onload = () => {
       const bc = baseCanvasRef.current!; bc.width = imgItem.w; bc.height = imgItem.h;
       const bctx = bc.getContext("2d")!;
@@ -1446,6 +1576,7 @@ export default function App({ hostedReview }: AppProps = {}) {
       resetView();
       scheduleRedraw();
     };
+    img.onerror = () => console.warn("base image load failed:", imgItem.baseURL?.slice(0, 80));
     img.src = imgItem.baseURL;
     imgItem.labels.forEach(l => ensureCanvasSize(l, imgItem.w, imgItem.h));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1462,8 +1593,17 @@ export default function App({ hostedReview }: AppProps = {}) {
     if (!current || !canvasWrapRef.current) return;
     const boxW = canvasWrapRef.current.clientWidth;
     const boxH = canvasWrapRef.current.clientHeight; // already excludes toolbar
-    const fit = computeContainFit(current.w, current.h, boxW, Math.max(1, boxH));
-    fitRef.current = fit;
+    // When zoom-to-crop is active, fit the crop rectangle instead of the whole
+    // frame: contain-fit the crop's dimensions and pan so the crop's top-left maps
+    // to the centered draw area. The base image is unchanged (non-destructive).
+    const cr = cropZoomRef.current ? cropRectRef.current : null;
+    if (cr && cr.w > 0 && cr.h > 0) {
+      fitRef.current = computeContainFit(cr.w, cr.h, boxW, Math.max(1, boxH));
+      zoomRef.current = 1;
+      panRef.current = { x: -cr.x, y: -cr.y };
+      return;
+    }
+    fitRef.current = computeContainFit(current.w, current.h, boxW, Math.max(1, boxH));
     zoomRef.current = 1;
     panRef.current = { x: 0, y: 0 };
   }
@@ -1666,6 +1806,17 @@ export default function App({ hostedReview }: AppProps = {}) {
       w: current.w,
       h: current.h,
     });
+  }
+  // Like toImageCoords but clamps to the frame bounds instead of returning null
+  // when the cursor leaves the image — used for dragging the crop rectangle so it
+  // stays valid even if the pointer drifts past an edge.
+  function toImageCoordsClamped(evt: React.PointerEvent<HTMLCanvasElement>): Pt | null {
+    if (!current) return null;
+    const rect = (evt.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+    const tx = currentTransforms();
+    const ix = (evt.clientX - rect.left - tx.offX) / tx.scale - tx.panX;
+    const iy = (evt.clientY - rect.top - tx.offY) / tx.scale - tx.panY;
+    return { x: Math.max(0, Math.min(current.w, ix)), y: Math.max(0, Math.min(current.h, iy)) };
   }
   function toImageCoords(evt: React.PointerEvent<HTMLCanvasElement>): Pt | null {
     const activeStrokeTransform = strokeTransformRef.current;
@@ -1972,6 +2123,35 @@ export default function App({ hostedReview }: AppProps = {}) {
       ctx.restore();
     }
 
+    // --- Custom crop region overlay (non-destructive view crop) ---
+    {
+      const drag = cropDragRef.current;
+      const r = drag
+        ? { x: Math.min(drag.x0, drag.x1), y: Math.min(drag.y0, drag.y1), w: Math.abs(drag.x1 - drag.x0), h: Math.abs(drag.y1 - drag.y0) }
+        : cropRectRef.current;
+      if (r && r.w > 0 && r.h > 0) {
+        ctx.save();
+        ctx.translate(offX, offY);
+        ctx.scale(scale, scale);
+        ctx.translate(panX, panY);
+        // Dim everything outside the crop so the kept region is obvious. Skip the
+        // dimming once we've zoomed to the crop (the outside isn't visible anyway).
+        if (!cropZoomRef.current) {
+          ctx.fillStyle = "rgba(0,0,0,0.45)";
+          ctx.beginPath();
+          ctx.rect(0, 0, current.w, current.h);
+          ctx.rect(r.x, r.y, r.w, r.h);
+          ctx.fill("evenodd");
+        }
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 2 / scale;
+        ctx.setLineDash([7 / scale, 4 / scale]);
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    }
+
     // --- Polygon tool live preview (drawn in image-space coordinates) ---
     if (tool === "polygon" && polygonPointsRef.current.length > 0) {
       const pts = polygonPointsRef.current;
@@ -2198,7 +2378,18 @@ export default function App({ hostedReview }: AppProps = {}) {
 
   // ----- input handlers -----
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!current) return; const label = activeLabel(); if (!label) return;
+    if (!current) return;
+    // Crop-define mode: drag a rectangle in image space (no label needed).
+    if (croppingMode) {
+      const p = toImageCoordsClamped(e);
+      if (p) {
+        cropDragRef.current = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+        try { (e.currentTarget as any).setPointerCapture?.(e.pointerId); } catch {}
+        scheduleRedraw();
+      }
+      return;
+    }
+    const label = activeLabel(); if (!label) return;
     // Polygon tool uses click events (onCanvasClick), not pointer drag events
     if (tool === "polygon") return;
     const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
@@ -2327,6 +2518,12 @@ export default function App({ hostedReview }: AppProps = {}) {
     }
   }
   function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
+    // Crop-define drag: grow the rectangle to the (clamped) cursor.
+    if (croppingMode && cropDragRef.current) {
+      const p = toImageCoordsClamped(e);
+      if (p) { cropDragRef.current.x1 = p.x; cropDragRef.current.y1 = p.y; scheduleRedraw(); }
+      return;
+    }
     // Polygon: track mouse for live edge preview, independent of drawing state
     if (tool === "polygon" && polygonPointsRef.current.length > 0) {
       polygonMousePtRef.current = toImageCoords(e);
@@ -2438,6 +2635,18 @@ export default function App({ hostedReview }: AppProps = {}) {
     scheduleRedraw();
   }
   function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
+    // Commit crop-define drag before any other handling.
+    if (croppingMode && cropDragRef.current) {
+      const d = cropDragRef.current; cropDragRef.current = null;
+      try { (e.currentTarget as any).releasePointerCapture?.(e.pointerId); } catch {}
+      const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1);
+      const w = Math.abs(d.x1 - d.x0), h = Math.abs(d.y1 - d.y0);
+      // Ignore an accidental click / tiny rectangle.
+      if (w >= 8 && h >= 8) setCropRect({ x, y, w, h });
+      setCroppingMode(false);
+      scheduleRedraw();
+      return;
+    }
     // Commit vertex drag before any other handling.
     if (vertexDragRef.current && current) {
       const { beforeAnnotations } = vertexDragRef.current;
@@ -2608,6 +2817,38 @@ export default function App({ hostedReview }: AppProps = {}) {
     zoomAtClientPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, 1 / 1.1);
   }
   function zoomResetBtn() { resetView(); scheduleRedraw(); }
+
+  // ----- Custom crop controls -----
+  // Toggle rectangle-drawing mode. Entering shows the whole frame first so the user
+  // can draw the crop over the full image (turns off zoom-to-crop while defining).
+  function startCropDefine() {
+    if (croppingMode) { setCroppingMode(false); cropDragRef.current = null; scheduleRedraw(); return; }
+    cropZoomRef.current = false;
+    setCropZoom(false);
+    setCroppingMode(true);
+    resetView();
+    scheduleRedraw();
+  }
+  // Toggle whether the view is zoomed/fit to the crop rectangle.
+  function toggleCropZoom() {
+    if (!cropRectRef.current) return;
+    const next = !cropZoomRef.current;
+    cropZoomRef.current = next;
+    setCropZoom(next);
+    resetView();
+    scheduleRedraw();
+  }
+  // Remove the crop entirely and return to the full-frame view.
+  function clearCrop() {
+    cropDragRef.current = null;
+    cropRectRef.current = null;
+    cropZoomRef.current = false;
+    setCropRect(null);
+    setCropZoom(false);
+    setCroppingMode(false);
+    resetView();
+    scheduleRedraw();
+  }
 
   // Undo / Redo
   function doUndo() {
@@ -3042,6 +3283,23 @@ export default function App({ hostedReview }: AppProps = {}) {
     }
   }
 
+  // EndoSeg-embed: persist masks/annotations back into the project (02_segmentation/).
+  async function saveToEndoSeg() {
+    if (!endoseg || endosegSaving) return;
+    try {
+      setEndosegSaving(true);
+      project.images.forEach(finalizeAll);
+      const snapshot = await buildErcpProjectSnapshot(projectName || "segmentation");
+      await endoseg.onSave(snapshot);
+      setHasUnsaved(false);
+    } catch (err) {
+      console.error("Saving segmentation failed.", err);
+      alert("Saving segmentation failed.");
+    } finally {
+      setEndosegSaving(false);
+    }
+  }
+
   async function performSaveWith(values?: { name: string; reviewers: string[] }) {
     const baseName = stripExt(values?.name || saveName || projectName || "project");
     const out = await buildErcpProjectSnapshot(baseName);
@@ -3178,7 +3436,7 @@ export default function App({ hostedReview }: AppProps = {}) {
   /* -------------------- styles -------------------- */
   const app: React.CSSProperties = {
     display: "flex",
-    height: isHostedReview ? "100%" : 'calc(var(--app-vh, 100dvh))',
+    height: sizeToParent ? "100%" : 'calc(var(--app-vh, 100dvh))',
     width: "100%",
     minWidth: 0,
     minHeight: 0,
@@ -3445,6 +3703,7 @@ export default function App({ hostedReview }: AppProps = {}) {
   const IconZoomIn = () => (<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2"/><path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2"/><path d="M11 8v6M8 11h6" stroke="currentColor" strokeWidth="2"/></svg>);
   const IconZoomOut = () => (<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2"/><path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2"/><path d="M8 11h6" stroke="currentColor" strokeWidth="2"/></svg>);
   const IconZoomReset = () => (<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2"/><path d="M4 11a7 7 0 0 1 7-7" stroke="currentColor" strokeWidth="2"/><path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2"/></svg>);
+  const IconCrop = () => (<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 2v16h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M2 6h16v16" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>);
   const IconEye = () => (<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z" stroke="currentColor" strokeWidth="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2"/></svg>);
   const IconEyeOff = () => (<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18" stroke="currentColor" strokeWidth="2"/><path d="M10.58 10.58A3 3 0 0 0 12 15a3 3 0 0 0 2.42-1.24" stroke="currentColor" strokeWidth="2"/><path d="M9.88 5.09A10.94 10.94 0 0 1 12 5c7 0 11 7 11 7a18.73 18.73 0 0 1-5.06 5.94M6.11 6.11A18.78 18.78 0 0 0 1 12s4 7 11 7a10.93 10.93 0 0 0 2.12-.21" stroke="currentColor" strokeWidth="2"/></svg>);
   const IconFillOn = () => (
@@ -3622,7 +3881,7 @@ export default function App({ hostedReview }: AppProps = {}) {
                     width: "100%", height: "100%", objectFit: "cover", borderRadius: 6, display: "block",
                   };
                   return im.thumbURL ? (
-                    <div style={wrap}><img src={im.thumbURL} alt="thumb" style={inner} /></div>
+                    <div style={wrap}><img src={im.thumbURL} alt="thumb" style={inner} loading="lazy" decoding="async" /></div>
                   ) : (
                     <div style={wrap}><div style={{ ...inner, background: C.bg2 }} /></div>
                   );
@@ -3842,6 +4101,50 @@ export default function App({ hostedReview }: AppProps = {}) {
               </span>
             </button>
 
+            {/* Custom crop controls */}
+            <button
+              style={croppingMode ? btnActive : btn}
+              onClick={startCropDefine}
+              title="Custom crop: drag a rectangle over the region to keep (e.g. the endoscopic view). Non-destructive — the full frame is preserved."
+            >
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <IconCrop />
+                {!toolbarCompact && (croppingMode ? " Drawing…" : " Crop")}
+              </span>
+            </button>
+            <button
+              style={cropZoom ? btnActive : btn}
+              onClick={toggleCropZoom}
+              disabled={!cropRect}
+              title={cropRect ? "Toggle zoom to the crop region" : "Define a crop region first"}
+            >
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, opacity: cropRect ? 1 : 0.5 }}>
+                <IconZoomIn />
+                {!toolbarCompact && (cropZoom ? " Cropped" : " Zoom crop")}
+              </span>
+            </button>
+            {cropRect && (
+              <button style={btn} onClick={clearCrop} title="Clear the crop region">
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  ✕{!toolbarCompact && " Crop"}
+                </span>
+              </button>
+            )}
+
+            {/* EndoSeg: save masks/annotations back into the project */}
+            {endoseg && (
+              <button
+                style={btnActive}
+                onClick={() => void saveToEndoSeg()}
+                disabled={endosegSaving}
+                title="Save masks & annotations into this project (02_segmentation/)"
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  💾{!toolbarCompact && (endosegSaving ? ' Saving…' : ' Save to project')}
+                </span>
+              </button>
+            )}
+
             {/* Settings */}
             <button style={settingsBtn} onClick={() => setShowSettings(true)}>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -4021,7 +4324,7 @@ export default function App({ hostedReview }: AppProps = {}) {
               onClick={onCanvasClick}
               onPointerCancel={() => cancelActiveStroke()}
               onPointerLeave={() => { cancelActiveStroke(); polygonMousePtRef.current = null; if (tool === "polygon" && polygonPointsRef.current.length > 0) scheduleRedraw(); }}
-              style={{ width: "100%", height: "100%", display: "block", touchAction: "none", cursor: tool === "select" ? "default" : "crosshair" }}
+              style={{ width: "100%", height: "100%", display: "block", touchAction: "none", cursor: croppingMode ? "crosshair" : (tool === "select" ? "default" : "crosshair") }}
             />
             <canvas
               ref={previewCanvasRef}

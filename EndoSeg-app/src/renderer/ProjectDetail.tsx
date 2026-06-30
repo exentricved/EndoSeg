@@ -5,14 +5,14 @@ import {
   type ProjectManifest,
   type StageId,
 } from "../core/stages.js";
-import type { IntakeProgress, DedupProgress } from "../shared/ipc.js";
+import type { IntakeProgress, DedupProgress, ExportProgress } from "../shared/ipc.js";
 import { StageBadge, formatTime } from "./ui.js";
 
 const STAGE_HINT: Record<StageId, string> = {
   intake: "Upload a sphincterotomy video — copied into the project, hashed, and frames sampled.",
   dedup: "Filter near-duplicate frames (perceptual hash).",
   segmentation: "Run ML segmentation, then review/correct masks in the annotator.",
-  export: "Export a folder of NRRD masks + a packaged project.json.",
+  export: "Package annotated frames + multi-class label maps (pixel = class ID) + metadata.json into 03_export/.",
 };
 
 const INTAKE_LABEL: Record<IntakeProgress["phase"], string> = {
@@ -26,14 +26,21 @@ const DEDUP_LABEL: Record<DedupProgress["phase"], string> = {
   copy: "Copying kept frames…",
 };
 
+const EXPORT_LABEL: Record<ExportProgress["phase"], string> = {
+  frames: "Copying frames & generating label maps…",
+  metadata: "Writing metadata…",
+};
+
 export function ProjectDetail({
   id,
   onBack,
   onOpenAnnotator,
+  onOpenFrameReview,
 }: {
   id: string;
   onBack: () => void;
   onOpenAnnotator: (id: string) => void;
+  onOpenFrameReview: (id: string) => void;
 }) {
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [missing, setMissing] = useState(false);
@@ -80,6 +87,23 @@ export function ProjectDetail({
     );
     try {
       const updated = await window.endoseg.runDedup(id);
+      if (updated) setManifest(updated);
+    } finally {
+      unsub.current?.();
+      unsub.current = null;
+      setRunning(null);
+      setStatusLine(null);
+    }
+  }, [id]);
+
+  const runExportStage = useCallback(async () => {
+    setRunning("export");
+    setStatusLine(EXPORT_LABEL.frames);
+    unsub.current = window.endoseg.onExportProgress((p) =>
+      setStatusLine(EXPORT_LABEL[p.phase] + (p.total > 0 ? ` (${p.done}/${p.total})` : "")),
+    );
+    try {
+      const updated = await window.endoseg.runExport(id);
       if (updated) setManifest(updated);
     } finally {
       unsub.current?.();
@@ -144,13 +168,25 @@ export function ProjectDetail({
                     {running === "intake" ? "Working…" : st.status === "done" ? "Re-import…" : "Add video…"}
                   </button>
                 ) : stage === "dedup" ? (
-                  <button
-                    onClick={() => void runDedup()}
-                    disabled={busy || !intakeDone}
-                    title={intakeDone ? "" : "Run intake first"}
-                  >
-                    {running === "dedup" ? "Working…" : st.status === "done" ? "Re-run…" : "Run dedup"}
-                  </button>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "stretch" }}>
+                    <button
+                      onClick={() => void runDedup()}
+                      disabled={busy || !intakeDone}
+                      title={intakeDone ? "" : "Run intake first"}
+                    >
+                      {running === "dedup" ? "Working…" : st.status === "done" ? "Re-run…" : "Run dedup"}
+                    </button>
+                    {st.status === "done" && (
+                      <button
+                        className="secondary"
+                        onClick={() => onOpenFrameReview(id)}
+                        disabled={busy}
+                        title="Browse kept and dropped frames"
+                      >
+                        Review frames
+                      </button>
+                    )}
+                  </div>
                 ) : stage === "segmentation" ? (
                   <button
                     onClick={() => onOpenAnnotator(id)}
@@ -159,9 +195,26 @@ export function ProjectDetail({
                   >
                     Open annotator
                   </button>
-                ) : (
-                  <button disabled title="Coming in a later phase">Run…</button>
-                )}
+                ) : stage === "export" ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "stretch" }}>
+                    <button
+                      onClick={() => void runExportStage()}
+                      disabled={busy || manifest.stages.segmentation.status !== "done"}
+                      title={manifest.stages.segmentation.status === "done" ? "" : "Save annotations first"}
+                    >
+                      {running === "export" ? "Exporting…" : st.status === "done" ? "Re-export" : "Run export"}
+                    </button>
+                    {st.status === "done" && (
+                      <button
+                        className="secondary"
+                        onClick={() => void window.endoseg.revealExport(id)}
+                        disabled={busy}
+                      >
+                        Open folder
+                      </button>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </div>
           );
