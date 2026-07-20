@@ -1,0 +1,35 @@
+appId: org.jhu.endoseg.review
+productName: EndoSeg Review
+copyright: EndoSeg
+directories:
+  output: release
+  buildResources: assets
+files:
+  - dist/**
+  - dist-electron/**
+  - assets/icon.svg
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+# Register .endoseg so double-clicking the file opens EndoSeg Review
+fileAssociations:
+  - ext: endoseg
+    name: EndoSeg Review Package
+    description: EndoSeg Annotation Review Package
+    role: Editor
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: EndoSeg Review
+  runAfterFinish: true
+mac:
+  target:
+    - dmg
+  category: public.app-category.medical
+dmg:
+  title: EndoSeg Review

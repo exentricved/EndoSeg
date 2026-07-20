@@ -1,0 +1,39 @@
+{
+  "name": "endoseg",
+  "productName": "EndoSeg",
+  "version": "0.1.0",
+  "description": "Offline desktop app for sphincterotomy/ERCP video: intake, dedup, segmentation, export.",
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build:renderer": "vite build",
+    "build:main": "node scripts/build-electron.mjs",
+    "build": "npm run build:renderer && npm run build:main",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dist": "npm run build && electron-builder",
+    "release": "npm run build && electron-builder --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.1.2",
+    "vitest": "^4.1.2"
+  }
+}

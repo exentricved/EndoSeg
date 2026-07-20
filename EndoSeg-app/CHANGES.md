@@ -1,0 +1,72 @@
+# EndoSeg Annotator — Changes (2026-06-25)
+
+## Frame sampling default
+- Changed `frameSampleEvery` default from 6 → **15** (≈2 fps at 30 fps source).  
+  Literature standard for surgical/endoscopy annotation: 1–2 fps. Applies to new projects only; existing extracted frames are unaffected.
+
+## Canvas resolution fix (HiDPI / Retina)
+- Canvas buffer now multiplied by `devicePixelRatio` on resize.  
+  All rendering applies `ctx.scale(dpr, dpr)` so coordinates remain in CSS pixels.  
+  Effect: sharp images and visible thin annotation strokes on any HiDPI display (4K, Retina, etc.).
+
+## New tool: Brush (`B`)
+- Paints a filled circle stamp at the active class color onto a per-frame pixel mask.  
+- Mask stored at native frame resolution (separate from polygons).  
+- Size slider in floating panel; `[` / `]` keys adjust radius in 5px steps.
+
+## New tool: Eraser (`E`)
+- Click on a polygon → deletes it.  
+- Drag over empty area → erases from the active class's pixel mask (`destination-out`).  
+- Shares the brush size slider.
+
+## Pixel mask layer
+- Each (frameId, classId) pair has an `HTMLCanvasElement` at native image resolution.  
+- Rendered in `drawScene` at 50% alpha over the image.  
+- Serialized as base64 PNG data URLs in `annotations.leus` and restored on reopen.  
+- Merged with polygon rasterization at save time → same per-class PNG mask output.
+
+## Copy from arbitrary frame
+- Floating panel: number input + **Copy** button. Copies polygons *and* pixel masks from the entered frame number into the current frame.  
+- Quick **← Copy prev** shortcut retained below the input.
+
+## Auto DW button (upper toolbar)
+- Fixed toolbar above the canvas (not in the floating panel).  
+- Loads current frame with `crossOrigin`, reads pixel data via `getImageData`.  
+- Pixels matching reddish/pinkish HSL range (H ≤ 35° or H ≥ 325°, S > 12%, L 15–88%) are painted into the Duodenal Wall class mask.  
+- Result is immediately editable with Brush / Eraser tools.
+
+## Frame Review page
+- Accessible via **Review frames** button on the Dedup stage card (appears after dedup completes).  
+- Thumbnail grid of all raw frames: green border = kept, red/dimmed = dropped.  
+- Shows frame index, filename, and Hamming distance for dropped frames.  
+- Filter bar: All / Kept / Dropped.
+
+## Keyboard shortcuts (updated)
+| Key | Action |
+|-----|--------|
+| `P` | Polygon tool |
+| `B` | Brush tool |
+| `E` | Eraser tool |
+| `S` | Select tool |
+| `[` / `]` | Decrease / increase brush size |
+| `1`–`9`, `0` | Select annotation class |
+| `A` / `←` | Previous frame |
+| `D` / `→` | Next frame |
+| `F` | Fit image to window |
+| `Ctrl+S` | Save annotations |
+| `Esc` | Cancel in-progress polygon |
+| `Enter` | Finish polygon |
+| `Del` / `Backspace` | Delete selected polygon |
+
+## Files changed
+| File | Change |
+|------|--------|
+| `src/node/settings.ts` | Default `frameSampleEvery` 6 → 15 |
+| `src/shared/ipc.ts` | Add `framesReview` channel, `FrameReviewItem`, `FrameReviewResult` types, `getFrameReview` API method |
+| `src/node/segmentation.ts` | Add `getFrameReview()` — reads `dedup-report.json`, attaches thumbnail URLs |
+| `electron/main.ts` | Register `framesReview` IPC handler |
+| `electron/preload.ts` | Bridge `getFrameReview` |
+| `src/renderer/SegmentationView.tsx` | DPR fix, brush, eraser, pixel mask layer, copy-from-N, Auto DW, keyboard shortcuts |
+| `src/renderer/FrameReviewView.tsx` | **New** — frame review thumbnail grid |
+| `src/renderer/App.tsx` | Add `frame-review` view kind, import + render `FrameReviewView` |
+| `src/renderer/ProjectDetail.tsx` | Add `onOpenFrameReview` prop, "Review frames" button on dedup card |

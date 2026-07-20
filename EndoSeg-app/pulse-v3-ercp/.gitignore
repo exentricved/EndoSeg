@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment — never commit secrets
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Vite dev-server diagnostic output
+vite.err
+vite.out
+
+# Claude Code local session settings (per-developer, not project config)
+.claude/
+
+# Model weights and ONNX exports — large binaries, not source
+checkpoints/
+onnx_export/
+public/models/
+
+# Generated training dataset — derived from .leus files, not source
+output/
+
+# Python cache
+scripts/__pycache__/
+__pycache__/
+*.pyc
