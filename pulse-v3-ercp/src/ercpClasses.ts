@@ -27,7 +27,7 @@ export type DepthRankPolicy =
 
 /* -------------------- class definition -------------------- */
 export type ErcpClassDef = {
-  id: number;            // 1..8 (matches 1-8 class hotkeys)
+  id: number;            // 1-based; matches keyboard hotkeys 1–9
   name: string;          // "PAPILLA_BODY"
   abbr: string;          // "PB"
   color: string;         // hex; used as fill base + stroke
@@ -120,6 +120,14 @@ export const ERCP_CLASSES: ErcpClassDef[] = [
     abbr: "FP",
     color: "#22D3EE",
     depthRank: { mode: "fixed", value: null },
+    attributes: [],
+  },
+  {
+    id: 9,
+    name: "BILIARY_RIDGE",
+    abbr: "BR",
+    color: "#A3E635",
+    depthRank: { mode: "editable", default: 2 },
     attributes: [],
   },
 ];
