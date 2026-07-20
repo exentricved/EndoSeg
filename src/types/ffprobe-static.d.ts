@@ -1,0 +1,4 @@
+declare module "ffprobe-static" {
+  export const path: string;
+  export const version: string;
+}

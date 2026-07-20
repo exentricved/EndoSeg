@@ -1,0 +1,49 @@
+appId: org.jhu.endoseg
+productName: EndoSeg
+copyright: EndoSeg
+directories:
+  output: release
+  buildResources: assets
+files:
+  - dist/**
+  - dist-electron/**
+  - assets/icon.svg
+# Bundled ffmpeg/ffprobe must stay outside the asar archive so their binaries
+# remain executable at runtime (see resolveBinary() in electron/main.ts).
+asarUnpack:
+  - "**/node_modules/ffmpeg-static/**"
+  - "**/node_modules/ffprobe-static/**"
+# NOTE (phase 3): no platform icon (.ico/.icns) yet — using the Electron default.
+# The in-app placeholder eye logo lives in assets/icon.svg. Real icons later.
+win:
+  target:
+    - nsis
+  icon: assets/icon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: EndoSeg
+  runAfterFinish: true
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - universal
+  category: public.app-category.medical
+  icon: assets/icon.icns
+  identity: null
+
+dmg:
+  title: EndoSeg
+
+# Auto-update publish target. Push a release with `npm run release` and the
+# installed app's "Check for updates" will find it.
+publish:
+  - provider: github
+    owner: exentricved
+    repo: EndoSeg
+    releaseType: release

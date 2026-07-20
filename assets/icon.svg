@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Placeholder EndoSeg logo: a stylized eye. Replace later. -->
+  <rect width="256" height="256" rx="48" fill="#0f172a"/>
+  <g fill="none" stroke="#38bdf8" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M40 128c30-44 146-44 176 0-30 44-146 44-176 0z"/>
+  </g>
+  <circle cx="128" cy="128" r="34" fill="#38bdf8"/>
+  <circle cx="128" cy="128" r="16" fill="#0f172a"/>
+  <circle cx="138" cy="118" r="6" fill="#e2e8f0"/>
+</svg>

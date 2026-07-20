@@ -1,0 +1,23 @@
+# Enforce LF line endings in the repository on all platforms.
+# Windows checkouts will also use LF so diffs stay clean.
+* text=auto eol=lf
+
+# Binary files — never diff or convert
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.nrrd binary
+*.gz   binary
+*.zip  binary
+*.pdf  binary
+
+# Project files treated as text
+*.leus text eol=lf
+*.json text eol=lf

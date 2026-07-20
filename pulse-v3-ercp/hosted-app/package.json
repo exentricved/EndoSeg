@@ -1,0 +1,22 @@
+{
+  "name": "annotateeus-hosted-shell",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "seed:dev": "node scripts/seed-dev.cjs"
+  },
+  "dependencies": {
+    "next": "^15.1.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "typescript": "^5.8.3"
+  }
+}
