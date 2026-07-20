@@ -118,6 +118,7 @@ export async function extractFrames(
   input: string,
   outDir: string,
   sampleEvery: number,
+  videoBase: string,
   onProgress?: (p: ExtractProgress) => void,
 ): Promise<number> {
   await fs.mkdir(outDir, { recursive: true });
@@ -129,8 +130,17 @@ export async function extractFrames(
     },
   });
   if (res.code !== 0) throw new Error(`ffmpeg failed (${res.code}): ${res.stderr.slice(-400)}`);
-  const files = await fs.readdir(outDir);
-  return files.filter((f) => f.endsWith(".png")).length;
+
+  // Rename frame_%06d.png → {videoBase}_f{originalVideoFrame:07d}.png so that
+  // filenames encode temporal position in the source video without needing to
+  // consult intake.json. originalFrame = extractedIndex * sampleEvery (0-based).
+  const extracted = (await fs.readdir(outDir)).filter((f) => f.endsWith(".png")).sort();
+  for (let i = 0; i < extracted.length; i++) {
+    const originalFrame = i * sampleEvery;
+    const newName = `${videoBase}_f${String(originalFrame).padStart(7, "0")}.png`;
+    await fs.rename(path.join(outDir, extracted[i]), path.join(outDir, newName));
+  }
+  return extracted.length;
 }
 
 export interface RunIntakeOptions {
@@ -162,11 +172,13 @@ export async function runIntake(opts: RunIntakeOptions): Promise<IntakeRecord> {
   const meta = await probeVideo(opts.ffprobePath, dest);
 
   opts.onProgress?.({ phase: "extract" });
+  const videoBase = safeBasename(opts.sourcePath).replace(/\.[^.]+$/, "");
   const framesExtracted = await extractFrames(
     opts.ffmpegPath,
     dest,
     rawDir,
     opts.sampleEvery,
+    videoBase,
     (p) => opts.onProgress?.({ phase: "extract", frames: p.frames }),
   );
 
