@@ -15,6 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
     "release": "npm run build && electron-builder --publish always"
   },
   "dependencies": {
