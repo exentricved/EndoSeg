@@ -16,13 +16,16 @@ import {
   listProjects,
   readManifest,
   updateStageOnDisk,
+  updateWorkOnDisk,
 } from "../src/node/library.js";
+import { currentIdentity, logActivity, readActivity, activityDir } from "../src/node/activity.js";
 import { runIntake } from "../src/node/intake.js";
 import {
   listSegFrames,
   loadSegmentationSnapshot,
   saveSegmentationSnapshot,
   resolveFramePath,
+  removeFrames,
 } from "../src/node/segmentation.js";
 import { runExport } from "../src/node/export.js";
 import { setupUpdater, checkForUpdates } from "./updater.js";
@@ -130,6 +133,7 @@ function registerIpc(): void {
     platform: process.platform,
     electron: process.versions.electron,
     libraryDir,
+    user: currentIdentity().user,
   }));
 
   ipcMain.handle(IPC.libraryGet, () => libraryState());
@@ -199,9 +203,21 @@ function registerIpc(): void {
     if (typeof projectId !== "string" || typeof sourcePath !== "string") return null;
     if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
     const send = (p: IntakeProgress) => mainWindow?.webContents.send(IPC.intakeProgress, p);
+    const who = currentIdentity();
+    const file = path.basename(sourcePath);
+    const startedAt = nowIso();
+    const m = await updateWorkOnDisk(
+      libraryDir,
+      projectId,
+      { status: "ongoing", intakeBy: who.user, intakeAt: startedAt, sourceFile: file, sourcePath, statusBy: who.user, statusAt: startedAt },
+      startedAt,
+    );
+    const projectName = m?.name;
+    await logActivity(libraryDir, { at: startedAt, action: "intake_started", projectId, projectName, file: sourcePath, status: "ongoing" }, who);
     try {
       await updateStageOnDisk(libraryDir, projectId, "intake", { status: "in_progress" }, nowIso());
       const record = await runIntake({
+        importedBy: who.user,
         baseDir: libraryDir,
         projectId,
         sourcePath,
@@ -211,6 +227,11 @@ function registerIpc(): void {
         now: nowIso(),
         onProgress: send,
       });
+      await logActivity(
+        libraryDir,
+        { at: nowIso(), action: "intake_completed", projectId, projectName, file: sourcePath, sha256: record.sha256, detail: `${record.framesExtracted} frames` },
+        who,
+      );
       return await updateStageOnDisk(
         libraryDir,
         projectId,
@@ -224,6 +245,7 @@ function registerIpc(): void {
         { source: "intake", message: e.message, detail: e.stack, projectId, stage: "intake" },
         nowIso(),
       );
+      await logActivity(libraryDir, { at: nowIso(), action: "intake_failed", projectId, projectName, file: sourcePath, detail: e.message }, who);
       return updateStageOnDisk(libraryDir, projectId, "intake", { status: "error", error: e.message }, nowIso());
     }
   });
@@ -266,6 +288,14 @@ function registerIpc(): void {
     try {
       await updateStageOnDisk(libraryDir, projectId, "export", { status: "in_progress" }, nowIso());
       const result = await runExport(libraryDir, projectId, send, exportRootFor(projectId));
+      await logActivity(libraryDir, {
+        at: nowIso(),
+        action: "export_completed",
+        projectId,
+        projectName: (await readManifest(libraryDir, projectId))?.name,
+        file: result.exportDir,
+        detail: `${result.frameCount} frames, ${result.labelMapCount} label maps`,
+      });
       return await updateStageOnDisk(
         libraryDir,
         projectId,
@@ -279,6 +309,7 @@ function registerIpc(): void {
         { source: "export", message: e.message, detail: e.stack, projectId, stage: "export" },
         nowIso(),
       );
+      await logActivity(libraryDir, { at: nowIso(), action: "export_failed", projectId, detail: e.message });
       return updateStageOnDisk(libraryDir, projectId, "export", { status: "error", error: e.message }, nowIso());
     }
   });
@@ -288,6 +319,37 @@ function registerIpc(): void {
     const dir = exportRootFor(projectId);
     await fs.mkdir(dir, { recursive: true });
     await shell.openPath(dir);
+  });
+
+  ipcMain.handle(IPC.projectSetStatus, async (_e, projectId: unknown, status: unknown) => {
+    if (typeof projectId !== "string" || (status !== "ongoing" && status !== "complete")) return null;
+    const who = currentIdentity();
+    const at = nowIso();
+    const m = await updateWorkOnDisk(libraryDir, projectId, { status, statusBy: who.user, statusAt: at }, at);
+    if (m) await logActivity(libraryDir, { at, action: "status_changed", projectId, projectName: m.name, status }, who);
+    return m;
+  });
+
+  ipcMain.handle(IPC.framesRemove, async (_e, projectId: unknown, frameIds: unknown): Promise<string[]> => {
+    if (typeof projectId !== "string" || !Array.isArray(frameIds)) return [];
+    const names = frameIds.filter((f): f is string => typeof f === "string");
+    const moved = await removeFrames(libraryDir, projectId, names);
+    if (moved.length) {
+      await logActivity(libraryDir, {
+        at: nowIso(),
+        action: "frames_removed",
+        projectId,
+        projectName: (await readManifest(libraryDir, projectId))?.name,
+        detail: `${moved.length} split-screen frame${moved.length > 1 ? "s" : ""} moved to 01_frames/removed`,
+      });
+    }
+    return moved;
+  });
+
+  ipcMain.handle(IPC.activityList, () => readActivity(libraryDir));
+  ipcMain.handle(IPC.activityOpenFolder, async () => {
+    await fs.mkdir(activityDir(libraryDir), { recursive: true });
+    await shell.openPath(activityDir(libraryDir));
   });
 
   ipcMain.handle(IPC.updateCheck, (): Promise<UpdateStatus> => checkForUpdates(app.isPackaged));

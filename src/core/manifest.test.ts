@@ -50,6 +50,17 @@ describe("parseManifest", () => {
     if (r.ok) expect(Object.keys(r.value.stages)).toEqual(["intake", "segmentation", "export"]);
   });
 
+  it("keeps a valid work record and drops a malformed one", () => {
+    const p = createProject("c", "C", T0) as any;
+    p.work = { status: "ongoing", intakeBy: "jdoe1", sourceFile: "case 12.mp4", bogus: 1, statusAt: 5 };
+    const r = parseManifest(p);
+    expect(r.ok && r.value.work).toEqual({ status: "ongoing", intakeBy: "jdoe1", sourceFile: "case 12.mp4" });
+    p.work = { status: "finished" };
+    const r2 = parseManifest(p);
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.value.work).toBeUndefined();
+  });
+
   it("rejects non-object input", () => {
     expect(parseManifest(null).ok).toBe(false);
     expect(parseManifest("nope").ok).toBe(false);

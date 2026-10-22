@@ -2,7 +2,8 @@
 // Channel names live here so both sides cannot drift.
 
 import type { ProjectSummary } from "../core/manifest.js";
-import type { ProjectManifest } from "../core/stages.js";
+import type { ProjectManifest, WorkStatus } from "../core/stages.js";
+import type { ActivityEvent } from "../node/activity.js";
 import type { Settings } from "../node/settings.js";
 
 export const IPC = {
@@ -29,6 +30,10 @@ export const IPC = {
   crashList: "crash:list",
   crashRead: "crash:read",
   crashOpenFolder: "crash:openFolder",
+  projectSetStatus: "project:setStatus",
+  framesRemove: "frames:remove",
+  activityList: "activity:list",
+  activityOpenFolder: "activity:openFolder",
 } as const;
 
 export interface IntakeProgress {
@@ -92,6 +97,8 @@ export interface AppInfo {
   platform: string;
   electron: string;
   libraryDir: string;
+  /** OS account running the app — recorded on intake, export and status changes. */
+  user: string;
 }
 
 export interface LibraryState {
@@ -129,6 +136,13 @@ export interface EndoSegApi {
   onExportProgress(cb: (p: ExportProgress) => void): () => void;
   /** Open the project's 03_export folder in the system file manager. */
   revealExport(projectId: string): Promise<void>;
+  /** Mark a project ongoing/complete (recorded with the current user). */
+  setProjectStatus(projectId: string, status: WorkStatus): Promise<ProjectManifest | null>;
+  /** Move frames out of the project into 01_frames/removed/; resolves to the names moved. */
+  removeFrames(projectId: string, frameIds: string[]): Promise<string[]>;
+  /** Library-wide activity (all users), newest first. */
+  listActivity(): Promise<ActivityEvent[]>;
+  openActivityFolder(): Promise<void>;
   checkForUpdates(): Promise<UpdateStatus>;
   onUpdateStatus(cb: (s: UpdateStatus) => void): () => void;
   listCrashes(): Promise<string[]>;

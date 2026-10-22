@@ -23,6 +23,10 @@ export interface VideoMeta {
 export interface IntakeRecord {
   schemaVersion: 1;
   sourceFile: string;
+  /** Full original path of the video that was taken in. */
+  sourcePath: string;
+  /** OS account that ran intake. */
+  importedBy?: string;
   importedAt: string;
   sha256: string;
   frameSampleEvery: number;
@@ -154,6 +158,7 @@ export interface RunIntakeOptions {
   ffprobePath: string;
   sampleEvery: number;
   now: string;
+  importedBy?: string;
   onProgress?: (p: { phase: "copy" | "probe" | "extract"; frames?: number }) => void;
 }
 
@@ -188,6 +193,8 @@ export async function runIntake(opts: RunIntakeOptions): Promise<IntakeRecord> {
   const record: IntakeRecord = {
     schemaVersion: 1,
     sourceFile: destName,
+    sourcePath: opts.sourcePath,
+    ...(opts.importedBy ? { importedBy: opts.importedBy } : {}),
     importedAt: opts.now,
     sha256,
     frameSampleEvery: opts.sampleEvery,

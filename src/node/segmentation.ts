@@ -94,6 +94,35 @@ export async function listSegFrames(
   return { source: "none", frames: [] };
 }
 
+/**
+ * Take frames out of the project (e.g. split-screen endoscopy + fluoroscopy
+ * frames). Files are moved to 01_frames/removed/ rather than deleted, so a
+ * mistake can be undone by moving them back. Returns the names moved.
+ */
+export async function removeFrames(
+  baseDir: string,
+  projectId: string,
+  frameIds: string[],
+): Promise<string[]> {
+  const removedDir = path.join(projectDir(baseDir, projectId), "01_frames", "removed");
+  await fs.mkdir(removedDir, { recursive: true });
+  const moved: string[] = [];
+  for (const name of frameIds) {
+    for (const source of ["raw", "kept"] as const) {
+      const abs = resolveFramePath(baseDir, projectId, source, name);
+      if (!abs) break; // unsafe name — skip entirely
+      try {
+        await renameWithRetry(abs, path.join(removedDir, name));
+        moved.push(name);
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    }
+  }
+  return moved;
+}
+
 const ANNOTATIONS_FILE = "annotations.leus";
 
 /** Read back a previously saved annotation snapshot, or null if none exists. */

@@ -39,6 +39,8 @@ interface AnnotationFrame {
 interface NativeSnapshot {
   version: 1;
   frames: AnnotationFrame[];
+  /** Frame ids marked as split-screen (endoscopy + fluoroscopy) — excluded from export. */
+  splitScreen?: string[];
 }
 
 export interface ExportResult {
@@ -304,7 +306,10 @@ export async function runExport(
   try {
     const raw = await fs.readFile(path.join(segDir, "annotations.leus"), "utf8");
     const snap = JSON.parse(raw) as NativeSnapshot;
-    if (snap.version === 1 && Array.isArray(snap.frames)) annotatedFrames = snap.frames;
+    if (snap.version === 1 && Array.isArray(snap.frames)) {
+      const skip = new Set(Array.isArray(snap.splitScreen) ? snap.splitScreen : []);
+      annotatedFrames = snap.frames.filter((f) => !skip.has(f.frameId));
+    }
   } catch { /* no annotations yet — export will be empty */ }
 
   // Locate source frames (raw; legacy deduped projects fall back to kept).

@@ -1,9 +1,18 @@
 # EndoSeg Annotator — Changes (2026-10-22)
 
+## Intake / export tracking
+- Every intake records the OS user, the original file name + full path, and sets the project **Ongoing**. **Mark complete / Reopen** on the project page records who changed it and when.
+- Projects table shows the video, who took it in, and Ongoing/Complete.
+- New **Activity** page: intake started/completed/failed, exports, status changes and frame removals for everyone using the library (filter by user, copy as CSV). Stored as `<library>/activity/<user>.jsonl`, one file per user so shared libraries never have two writers on one file.
+
+## Split-screen frames (`X`)
+- **X** marks/unmarks the current frame as split-screen (endoscopy + fluoroscopy); marked frames are dimmed with ⊘ in the frame list and never exported.
+- **Remove N marked frames…** (two-step confirm) moves them to `01_frames/removed/` (recoverable), drops their annotations, logs it, and saves.
+
 ## Optical tracking (`T`)
-- **Track next → [T]** carries the current frame's polygons + pixel masks onto the next frame and moves there; **← Track prev** pulls the previous frame's annotations onto the current one.
+- **Track next → [T]** adds the current frame's polygons + pixel masks to the next frame (moved by optical flow) and goes there; **← Track prev** adds the previous frame's annotations to the current one. Existing annotations on the destination are kept.
 - Pyramidal Lucas-Kanade optical flow (`src/core/optflow.ts`, pure TS) with a forward-backward check. Polygon vertices follow their own flow; vertices that can't be tracked (low texture, occlusion) follow a similarity transform fitted to the polygon's tracked points. Masks move by a fitted similarity transform.
-- One tracking step = one undo (`Ctrl+Z`). Tracked annotations replace the destination frame's — review before saving.
+- One tracking step = one undo (`Ctrl+Z`). Review tracked annotations before saving.
 
 ## Dedup stage removed
 - Pipeline is now **Intake → Segmentation → Export**; every extracted frame goes to the annotator.

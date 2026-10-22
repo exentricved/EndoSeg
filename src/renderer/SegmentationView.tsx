@@ -54,6 +54,8 @@ interface NativeSnapshot {
     pixelMasks?: Record<string, string>;
     label_masks: Record<string, string>;
   }>;
+  /** Frames marked split-screen (endoscopy + fluoroscopy) — skipped by export. */
+  splitScreen?: string[];
 }
 
 // ---- Pure helpers ----
@@ -183,6 +185,11 @@ export function SegmentationView({ projectId }: { projectId: string }) {
   const [showMasks, setShowMasks]       = useState(true);
   const [trackBusy, setTrackBusy]       = useState(false);
   const [trackMsg, setTrackMsg]         = useState<string | null>(null);
+  // Split-screen marks live in a ref (like annotations); the counter re-renders the UI.
+  const splitRef                        = useRef<Set<string>>(new Set());
+  const [splitCount, setSplitCount]     = useState(0);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving]         = useState(false);
 
   // Refs mirrored from state for use inside stable callbacks.
   const canvasRef       = useRef<HTMLCanvasElement>(null);
@@ -501,6 +508,10 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         setFrames_(framesRes.frames);
         if (snapshot && typeof snapshot === "object") {
           const s = snapshot as NativeSnapshot;
+          if (s.version === 1 && Array.isArray(s.splitScreen)) {
+            splitRef.current = new Set(s.splitScreen.filter((id) => typeof id === "string"));
+            setSplitCount(splitRef.current.size);
+          }
           if (s.version === 1 && Array.isArray(s.frames)) {
             for (const f of s.frames) {
               if (f.frameId && Array.isArray(f.polygons) && f.polygons.length) {
@@ -627,7 +638,9 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         }
         frameItems.push({ frameId, name: frame.name, polygons: polys, phase, pixelMasks: pixelMasksData, label_masks });
       }
-      const snapshot: NativeSnapshot = { version: 1, frames: frameItems };
+      const live = new Set(framesRef.current.map((f) => f.frameId));
+      const splitScreen = [...splitRef.current].filter((id) => live.has(id));
+      const snapshot: NativeSnapshot = { version: 1, frames: frameItems, splitScreen };
       await window.endoseg.saveSegmentation(projectId, snapshot);
       setSaveMsg("Saved");
       setTimeout(() => setSaveMsg(null), 2500);
@@ -672,6 +685,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       if (e.key === "l" || e.key === "L") { setTool_("lasso");   return; }
       if (e.key === "m" || e.key === "M") { toggleMasks(); return; }
       if (e.key === "t" || e.key === "T") { void trackForwardRef.current(); return; }
+      if (e.key === "x" || e.key === "X") { toggleSplitRef.current(); return; }
       // Brush size with [ ]
       if (e.key === "[") {
         const next = Math.max(1, brushRadiusRef.current - 5);
@@ -1040,22 +1054,19 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       const fallback = globalMotion(prev, next);
       const undoEntries: UndoEntry[] = [];
 
-      // Polygons: replace the destination's polygons with tracked copies.
+      // Polygons: tracked copies are added alongside whatever the frame already has.
       let tracked = 0;
       if (srcPolys.length) {
-        for (const old of annsRef.current.get(dstFrame.frameId) ?? []) {
-          undoEntries.push({ kind: "poly-remove", frameId: dstFrame.frameId, poly: old });
-        }
         const moved: Polygon[] = srcPolys.map((p) => {
           const r = trackPolygon(prev, next, p.points.map(toS), fallback);
           if (r.trackedFraction >= 0.5) tracked++;
           return { id: uid(), classId: p.classId, points: r.points.map(fromS) };
         });
-        annsRef.current.set(dstFrame.frameId, moved);
+        annsRef.current.set(dstFrame.frameId, [...(annsRef.current.get(dstFrame.frameId) ?? []), ...moved]);
         for (const p of moved) undoEntries.push({ kind: "poly-add", frameId: dstFrame.frameId, polyId: p.id });
       }
 
-      // Pixel masks: move each class mask by its fitted similarity transform.
+      // Pixel masks: paint each moved class mask on top of the frame's existing mask.
       let masksMoved = 0;
       if (srcMasks) {
         for (const [cid, srcCv] of srcMasks) {
@@ -1069,8 +1080,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
           const dst = ensureMaskCanvas(dstFrame.frameId, cid, srcCv.width, srcCv.height);
           const dctx = dst.getContext("2d")!;
           dctx.save();
-          dctx.setTransform(1, 0, 0, 1, 0, 0);
-          dctx.clearRect(0, 0, dst.width, dst.height);
+          dctx.globalCompositeOperation = "source-over";
           dctx.imageSmoothingEnabled = false;
           dctx.setTransform(full.a, full.b, -full.b, full.a, full.tx, full.ty);
           dctx.drawImage(srcCv, 0, 0);
@@ -1083,7 +1093,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       const parts: string[] = [];
       if (srcPolys.length) parts.push(`${tracked}/${srcPolys.length} polygons tracked`);
       if (masksMoved) parts.push(`${masksMoved} mask${masksMoved > 1 ? "s" : ""} moved`);
-      setTrackMsg(`Tracked from frame ${srcIdx + 1}: ${parts.join(", ")} — review before saving`);
+      setTrackMsg(`Added from frame ${srcIdx + 1}: ${parts.join(", ")} — review before saving`);
       refreshAnnCount(); drawScene();
     } catch (e) {
       setTrackMsg(`Tracking failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1101,6 +1111,58 @@ export function SegmentationView({ projectId }: { projectId: string }) {
   }, [navigateTo, trackFrame]);
   const trackForwardRef = useRef(trackForward);
   useEffect(() => { trackForwardRef.current = trackForward; }, [trackForward]);
+
+  // ---- Split-screen (endoscopy + fluoroscopy) frames: mark, then remove ----
+  const toggleSplit = useCallback(() => {
+    const frame = framesRef.current[frameIdxRef.current];
+    if (!frame) return;
+    const set = splitRef.current;
+    if (set.has(frame.frameId)) set.delete(frame.frameId);
+    else set.add(frame.frameId);
+    setSplitCount(set.size);
+    setConfirmRemove(false);
+    drawScene();
+  }, [drawScene]);
+  const toggleSplitRef = useRef(toggleSplit);
+  useEffect(() => { toggleSplitRef.current = toggleSplit; }, [toggleSplit]);
+
+  const removeMarked = useCallback(async () => {
+    const ids = [...splitRef.current];
+    if (!ids.length) return;
+    setRemoving(true);
+    try {
+      const moved = new Set(await window.endoseg.removeFrames(projectId, ids));
+      if (!moved.size) return;
+      const curId = framesRef.current[frameIdxRef.current]?.frameId;
+      const before = framesRef.current;
+      // Land on the nearest surviving frame at or after the current one.
+      let landing = before.findIndex((f, i) => i >= frameIdxRef.current && !moved.has(f.frameId));
+      if (landing < 0) landing = before.length - 1;
+      while (landing > 0 && moved.has(before[landing].frameId)) landing--;
+      const landingId = before[landing]?.frameId;
+      for (const id of moved) {
+        annsRef.current.delete(id);
+        pixelMasksRef.current.delete(id);
+        phasesRef.current.delete(id);
+        frameSizesRef.current.delete(id);
+        grayCacheRef.current.delete(id);
+        splitRef.current.delete(id);
+      }
+      undoStackRef.current = undoStackRef.current.filter((e) => !("frameId" in e) || !moved.has(e.frameId));
+      const after = before.filter((f) => !moved.has(f.frameId));
+      setFrames_(after);
+      setSplitCount(splitRef.current.size);
+      const idx = Math.max(0, after.findIndex((f) => f.frameId === (moved.has(curId ?? "") ? landingId : curId)));
+      navigateTo(idx);
+      // Persist right away so the saved annotations never point at removed frames.
+      await handleSaveRef.current();
+    } catch (e) {
+      setSaveMsg(`Error: ${String(e)}`);
+    } finally {
+      setRemoving(false);
+      setConfirmRemove(false);
+    }
+  }, [navigateTo, projectId, setFrames_]);
 
   // ---- Auto-annotate duodenal wall by color range ----
   const autoDuodenalWall = useCallback(async () => {
@@ -1202,15 +1264,17 @@ export function SegmentationView({ projectId }: { projectId: string }) {
               const hasAnns   = (annsRef.current.get(f.frameId)?.length ?? 0) > 0;
               const hasMasks  = (pixelMasksRef.current.get(f.frameId)?.size ?? 0) > 0;
               const framePhase = phasesRef.current.get(f.frameId);
+              const isSplit = splitRef.current.has(f.frameId);
               const active = i === frameIdx;
               return (
                 <button key={f.frameId} onClick={() => navigateTo(i)} style={{ display: "flex", flexDirection: "column", padding: 0, textAlign: "left", background: active ? "#1a3050" : "transparent", border: "none", borderBottom: `1px solid ${active ? "#2a4a70" : "#111a26"}`, outline: active ? "1.5px solid #3b6fa8" : "none", outlineOffset: -1, color: active ? "#e4e9f0" : "#6b7e94", cursor: "pointer", flexShrink: 0 }}>
-                  <img src={f.url} loading="lazy" style={{ width: "100%", height: 52, objectFit: "cover", borderRadius: "2px 2px 0 0", display: "block" }} />
+                  <img src={f.url} loading="lazy" style={{ width: "100%", height: 52, objectFit: "cover", borderRadius: "2px 2px 0 0", display: "block", opacity: isSplit ? 0.35 : 1 }} />
                   <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 11 }}>
                     <span style={{ color: "#2d3f57", width: 30, textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
                     <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
                     {framePhase && <span title={framePhase} style={{ color: phaseColor(framePhase), fontSize: 7, flexShrink: 0 }}>◆</span>}
                     {(hasAnns || hasMasks) && <span style={{ color: "#4ade80", fontSize: 8, flexShrink: 0 }}>●</span>}
+                    {isSplit && <span title="Split-screen — marked for removal" style={{ color: "#f87171", fontSize: 10, flexShrink: 0 }}>⊘</span>}
                   </div>
                 </button>
               );
@@ -1229,6 +1293,11 @@ export function SegmentationView({ projectId }: { projectId: string }) {
             onDoubleClick={handleDoubleClick}
             onWheel={handleWheel}
           />
+          {splitCount > 0 && frames[frameIdx] && splitRef.current.has(frames[frameIdx].frameId) && (
+            <div style={{ position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)", background: "rgba(127,29,29,0.88)", color: "#fecaca", border: "1px solid #f87171", padding: "4px 12px", borderRadius: 6, fontSize: 11, pointerEvents: "none", whiteSpace: "nowrap" }}>
+              ⊘ Split-screen frame — marked for removal (X to unmark)
+            </div>
+          )}
           {inProgressLen > 0 && (
             <div style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.78)", color: "#e4e9f0", padding: "5px 14px", borderRadius: 8, fontSize: 11, pointerEvents: "none", whiteSpace: "nowrap" }}>
               {inProgressLen} pts · click near start or double-click to close · Esc to cancel
@@ -1371,7 +1440,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
                   disabled={trackBusy || frameIdx === 0}
                   onClick={() => void trackFrame(frameIdx - 1, frameIdx)}
                   style={{ flex: 1, fontSize: 11, padding: "2px 8px" }}
-                  title="Move the previous frame's polygons + masks onto this frame using optical flow"
+                  title="Add the previous frame's polygons + masks to this frame, moved by optical flow"
                 >
                   ← Track prev
                 </button>
@@ -1380,13 +1449,58 @@ export function SegmentationView({ projectId }: { projectId: string }) {
                   disabled={trackBusy || frameIdx >= frames.length - 1}
                   onClick={() => void trackForward()}
                   style={{ flex: 1, fontSize: 11, padding: "2px 8px" }}
-                  title="Carry this frame's annotations to the next frame and go there [T]"
+                  title="Add this frame's annotations to the next frame (moved by optical flow) and go there [T]"
                 >
                   Track next → [T]
                 </button>
               </div>
               {(trackBusy || trackMsg) && (
                 <span style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.4 }}>{trackBusy ? "Tracking…" : trackMsg}</span>
+              )}
+            </div>
+
+            <PanelDivider />
+
+            {/* Split-screen (endoscopy + fluoroscopy) frames */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 10, color: "#64748b" }}>Split-screen frames</span>
+              <button
+                className="secondary"
+                disabled={!frames.length}
+                onClick={toggleSplit}
+                style={{ fontSize: 11, padding: "2px 8px" }}
+                title="Mark/unmark this frame as showing endoscopy + fluoroscopy [X]"
+              >
+                {frames[frameIdx] && splitRef.current.has(frames[frameIdx].frameId) ? "Unmark split-screen [X]" : "Mark split-screen [X]"}
+              </button>
+              {splitCount > 0 && (
+                confirmRemove ? (
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button
+                      disabled={removing}
+                      onClick={() => void removeMarked()}
+                      style={{ flex: 1, fontSize: 11, padding: "2px 8px", background: "#450a0a", borderColor: "#f87171", color: "#fca5a5" }}
+                    >
+                      {removing ? "Removing…" : `Remove ${splitCount}`}
+                    </button>
+                    <button className="secondary" disabled={removing} onClick={() => setConfirmRemove(false)} style={{ fontSize: 11, padding: "2px 8px" }}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmRemove(true)}
+                    style={{ fontSize: 11, padding: "2px 8px", background: "#2a0d0d", borderColor: "#7f1d1d", color: "#fca5a5" }}
+                    title="Take marked frames out of this project (moved to 01_frames/removed) and save"
+                  >
+                    Remove {splitCount} marked frame{splitCount > 1 ? "s" : ""}…
+                  </button>
+                )
+              )}
+              {confirmRemove && (
+                <span style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.4 }}>
+                  Their annotations are discarded and the project is saved. Files go to 01_frames/removed.
+                </span>
               )}
             </div>
 

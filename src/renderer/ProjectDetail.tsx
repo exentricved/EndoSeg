@@ -99,6 +99,12 @@ export function ProjectDetail({
   if (!manifest) return <main className="detail"><p className="muted">Loading…</p></main>;
 
   const busy = running !== null;
+  const work = manifest.work;
+
+  const setStatus = async (status: "ongoing" | "complete") => {
+    const updated = await window.endoseg.setProjectStatus(id, status);
+    if (updated) setManifest(updated);
+  };
 
   return (
     <main className="detail">
@@ -112,6 +118,29 @@ export function ProjectDetail({
           Open folder
         </button>
       </div>
+
+      {work && (
+        <div className="work-card">
+          <div>
+            <span className={`work-status work-${work.status}`}>{work.status}</span>
+            {work.statusBy && work.statusAt && (
+              <span className="muted"> · set by {work.statusBy}, {formatTime(work.statusAt)}</span>
+            )}
+          </div>
+          <div className="muted">
+            Video <strong title={work.sourcePath} style={{ color: "var(--text)" }}>{work.sourceFile ?? "—"}</strong>
+            {work.intakeBy && <> · taken in by {work.intakeBy}</>}
+            {work.intakeAt && <>, {formatTime(work.intakeAt)}</>}
+          </div>
+          <div>
+            {work.status === "ongoing" ? (
+              <button onClick={() => void setStatus("complete")} disabled={busy}>Mark complete</button>
+            ) : (
+              <button className="secondary" onClick={() => void setStatus("ongoing")} disabled={busy}>Reopen</button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="stage-list">
         {STAGES.map((stage, i) => {

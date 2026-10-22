@@ -4,6 +4,7 @@ import type { ProjectSummary } from "../core/manifest.js";
 import type { AppInfo, LibraryState } from "../shared/ipc.js";
 import { StageBar } from "./StageBar.js";
 import { CrashLogView } from "./CrashLogView.js";
+import { ActivityView } from "./ActivityView.js";
 import { SettingsView } from "./SettingsView.js";
 import { ProjectDetail } from "./ProjectDetail.js";
 import { StageBadge, formatTime } from "./ui.js";
@@ -12,6 +13,7 @@ import { SegmentationView } from "./SegmentationView.js";
 type View =
   | { kind: "hub" }
   | { kind: "crashlog" }
+  | { kind: "activity" }
   | { kind: "settings" }
   | { kind: "project"; id: string }
   | { kind: "annotator"; id: string };
@@ -99,6 +101,7 @@ export function App() {
           </span>
           <span className="brand-name">EndoSeg</span>
           <span className="version">{info ? `v${info.version}` : ""}</span>
+          {info?.user && <span className="version" title="Signed-in account — recorded on intake, export and status changes">{info.user}</span>}
         </div>
         <nav className="nav">
           <button
@@ -106,6 +109,12 @@ export function App() {
             onClick={() => setView({ kind: "hub" })}
           >
             Projects
+          </button>
+          <button
+            className={view.kind === "activity" ? "active" : ""}
+            onClick={() => setView({ kind: "activity" })}
+          >
+            Activity
           </button>
           <button
             className={view.kind === "settings" ? "active" : ""}
@@ -178,6 +187,8 @@ export function App() {
       )}
 
       {view.kind === "crashlog" && <CrashLogView />}
+
+      {view.kind === "activity" && <ActivityView />}
     </div>
   );
 }
@@ -201,6 +212,8 @@ function ProjectTable(props: {
       <thead>
         <tr>
           <th>Project</th>
+          <th>Video</th>
+          <th>Status</th>
           <th>Pipeline</th>
           <th>Current stage</th>
           <th>Updated</th>
@@ -216,6 +229,23 @@ function ProjectTable(props: {
             <td>
               <div className="proj-name">{p.name}</div>
               <div className="proj-id muted">{p.id}</div>
+            </td>
+            <td>
+              {p.work?.sourceFile ? (
+                <>
+                  <div title={p.work.sourcePath}>{p.work.sourceFile}</div>
+                  <div className="proj-id muted">by {p.work.intakeBy ?? "unknown"}</div>
+                </>
+              ) : (
+                <span className="muted">—</span>
+              )}
+            </td>
+            <td>
+              {p.work ? (
+                <span className={`work-status work-${p.work.status}`}>{p.work.status}</span>
+              ) : (
+                <span className="muted">—</span>
+              )}
             </td>
             <td>
               <StageBar statuses={p.stageStatuses} />

@@ -171,3 +171,16 @@ tr.attention { background: rgba(239, 68, 68, 0.08); }
   border: 1px solid var(--border); border-radius: 8px; padding: 14px;
   font: 12px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace; white-space: pre-wrap;
 }
+
+/* Work status (ongoing / complete) */
+.work-status {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+}
+.work-ongoing { background: color-mix(in srgb, var(--in_progress) 22%, transparent); color: var(--in_progress); }
+.work-complete { background: color-mix(in srgb, var(--done) 22%, transparent); color: var(--done); }
+.work-card {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px;
+  max-width: 820px; margin-bottom: 14px; padding: 12px 16px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+}

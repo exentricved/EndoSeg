@@ -36,6 +36,10 @@ const api: EndoSegApi = {
     return () => ipcRenderer.removeListener(IPC.exportProgress, listener);
   },
   revealExport: (projectId) => ipcRenderer.invoke(IPC.exportReveal, projectId),
+  setProjectStatus: (projectId, status) => ipcRenderer.invoke(IPC.projectSetStatus, projectId, status),
+  removeFrames: (projectId, frameIds) => ipcRenderer.invoke(IPC.framesRemove, projectId, frameIds),
+  listActivity: () => ipcRenderer.invoke(IPC.activityList),
+  openActivityFolder: () => ipcRenderer.invoke(IPC.activityOpenFolder),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   onUpdateStatus: (cb) => {
     const listener = (_e: IpcRendererEvent, s: UpdateStatus) => cb(s);
