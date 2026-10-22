@@ -3,7 +3,7 @@
 ## Start-up sign-in
 - On launch, people enter their **name** (last name used is prefilled); that name — not the Windows login — is recorded on intake, export, status changes and frame removals. **Switch** in the top bar changes person.
 - The same screen shows the **library folder** and proves it is writable (create + delete a probe file). An unmapped/offline network drive shows "folder or drive not found — is the network drive connected?" and blocks Continue instead of the app failing to open. Continue pins the shown folder, so a later launch with the NAS offline errors rather than silently using Documents.
-- Default library: `R:kshin-ercp-nas\EndoSeg Library` when that drive exists (SAFE Desktop), else Documents.
+- Default library: `R:\akshin-ercp-nas\EndoSeg Library` when that drive exists (SAFE Desktop), else Documents.
 
 ## Windows portable build
 - `electron-builder` also produces `EndoSeg-<version>-portable.exe` — no install; run it from the NAS or H: on SAFE/VDI sessions where the local install folder may not persist.
