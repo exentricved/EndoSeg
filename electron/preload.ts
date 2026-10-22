@@ -16,6 +16,7 @@ const api: EndoSegApi = {
   getLibrary: () => ipcRenderer.invoke(IPC.libraryGet),
   createProject: (name) => ipcRenderer.invoke(IPC.libraryCreate, name),
   chooseLibraryDir: () => ipcRenderer.invoke(IPC.libraryChooseDir),
+  chooseExportDir: () => ipcRenderer.invoke(IPC.exportChooseDir),
   getProject: (id) => ipcRenderer.invoke(IPC.projectGet, id),
   revealProject: (id) => ipcRenderer.invoke(IPC.projectReveal, id),
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),

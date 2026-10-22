@@ -48,6 +48,14 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
     }
   }, [load, onChanged]);
 
+  const chooseExportDir = useCallback(async () => {
+    const next = await window.endoseg.chooseExportDir();
+    if (next) {
+      setSettings(next);
+      onChanged();
+    }
+  }, [onChanged]);
+
   if (!settings) return <main className="settings"><p className="muted">Loading…</p></main>;
 
   return (
@@ -62,6 +70,36 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
         <div className="setting-control">
           <code className="path">{libraryDir}</code>
           <button className="secondary" onClick={chooseDir}>Change…</button>
+          {settings.libraryDir && (
+            <button
+              className="secondary"
+              onClick={async () => {
+                await patch({ libraryDir: null });
+                void load();
+              }}
+            >
+              Reset to default
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className="setting-row">
+        <div className="setting-label">
+          <strong>Export folder</strong>
+          <p className="muted">
+            Where exported datasets are written. Default is each project's 03_export folder;
+            a custom folder gets one subfolder per project.
+          </p>
+        </div>
+        <div className="setting-control">
+          <code className="path">{settings.exportDir ?? "Inside each project (03_export)"}</code>
+          <button className="secondary" onClick={chooseExportDir}>Change…</button>
+          {settings.exportDir && (
+            <button className="secondary" onClick={() => void patch({ exportDir: null })}>
+              Reset to default
+            </button>
+          )}
         </div>
       </section>
 

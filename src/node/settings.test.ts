@@ -15,19 +15,21 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings("nope")).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings([])).toEqual(DEFAULT_SETTINGS);
-    expect(DEFAULT_SETTINGS.frameSampleEvery).toBe(6);
+    expect(DEFAULT_SETTINGS.frameSampleEvery).toBe(15);
   });
 
   it("keeps valid fields and rejects invalid ones", () => {
     expect(normalizeSettings({ frameSampleEvery: 10 }).frameSampleEvery).toBe(10);
-    expect(normalizeSettings({ frameSampleEvery: 0 }).frameSampleEvery).toBe(6);
-    expect(normalizeSettings({ frameSampleEvery: 2.5 }).frameSampleEvery).toBe(6);
-    expect(normalizeSettings({ frameSampleEvery: 99999 }).frameSampleEvery).toBe(6);
+    expect(normalizeSettings({ frameSampleEvery: 0 }).frameSampleEvery).toBe(15);
+    expect(normalizeSettings({ frameSampleEvery: 2.5 }).frameSampleEvery).toBe(15);
+    expect(normalizeSettings({ frameSampleEvery: 99999 }).frameSampleEvery).toBe(15);
     expect(normalizeSettings({ gpu: "cpu" }).gpu).toBe("cpu");
     expect(normalizeSettings({ gpu: "metal" }).gpu).toBe("auto");
     expect(normalizeSettings({ libraryDir: "D:/lib" }).libraryDir).toBe("D:/lib");
     expect(normalizeSettings({ libraryDir: "" }).libraryDir).toBeNull();
     expect(normalizeSettings({ libraryDir: null }).libraryDir).toBeNull();
+    expect(normalizeSettings({ exportDir: "E:/out" }).exportDir).toBe("E:/out");
+    expect(normalizeSettings({ exportDir: "" }).exportDir).toBeNull();
     expect(normalizeSettings({ dedupThreshold: 12 }).dedupThreshold).toBe(12);
     expect(normalizeSettings({ dedupThreshold: 0 }).dedupThreshold).toBe(0);
     expect(normalizeSettings({ dedupThreshold: 65 }).dedupThreshold).toBe(8);
@@ -37,9 +39,10 @@ describe("normalizeSettings", () => {
 
 describe("applySettings", () => {
   it("patches only provided fields", () => {
-    const base = { libraryDir: "D:/lib", frameSampleEvery: 6, gpu: "auto" as const, dedupThreshold: 8 };
+    const base = { libraryDir: "D:/lib", exportDir: null, frameSampleEvery: 6, gpu: "auto" as const, dedupThreshold: 8 };
     expect(applySettings(base, { frameSampleEvery: 12 })).toEqual({
       libraryDir: "D:/lib",
+      exportDir: null,
       frameSampleEvery: 12,
       gpu: "auto",
       dedupThreshold: 8,
@@ -63,9 +66,10 @@ describe("loadSettings / saveSettings", () => {
 
   it("round-trips saved settings", async () => {
     const file = path.join(dir, "settings.json");
-    await saveSettings(file, { libraryDir: "D:/x", frameSampleEvery: 8, gpu: "gpu", dedupThreshold: 10 });
+    await saveSettings(file, { libraryDir: "D:/x", exportDir: "E:/out", frameSampleEvery: 8, gpu: "gpu", dedupThreshold: 10 });
     expect(await loadSettings(file)).toEqual({
       libraryDir: "D:/x",
+      exportDir: "E:/out",
       frameSampleEvery: 8,
       gpu: "gpu",
       dedupThreshold: 10,

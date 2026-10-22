@@ -71,6 +71,13 @@ function resolveLibraryDir(): string {
   return settings.libraryDir ?? defaultLibraryDir();
 }
 
+/** Where a project's exports go: custom root (per-project subfolder) or 03_export. */
+function exportRootFor(projectId: string): string {
+  return settings.exportDir
+    ? path.join(settings.exportDir, projectId)
+    : path.join(libraryDir, "projects", projectId, "03_export");
+}
+
 async function ensureLibrary(dir: string): Promise<void> {
   await fs.mkdir(path.join(dir, "projects"), { recursive: true });
 }
@@ -147,6 +154,17 @@ function registerIpc(): void {
     libraryDir = resolveLibraryDir();
     await ensureLibrary(libraryDir);
     return libraryState();
+  });
+
+  ipcMain.handle(IPC.exportChooseDir, async (): Promise<Settings | null> => {
+    const res = await dialog.showOpenDialog(mainWindow!, {
+      title: "Choose EndoSeg export folder",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    settings = applySettings(settings, { exportDir: res.filePaths[0] });
+    await saveSettings(settingsPath(), settings);
+    return settings;
   });
 
   ipcMain.handle(IPC.projectGet, (_e, id: unknown) =>
@@ -281,7 +299,7 @@ function registerIpc(): void {
     const send = (p: ExportProgress) => event.sender.send(IPC.exportProgress, p);
     try {
       await updateStageOnDisk(libraryDir, projectId, "export", { status: "in_progress" }, nowIso());
-      const result = await runExport(libraryDir, projectId, send);
+      const result = await runExport(libraryDir, projectId, send, exportRootFor(projectId));
       return await updateStageOnDisk(
         libraryDir,
         projectId,
@@ -301,7 +319,8 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.exportReveal, async (_e, projectId: unknown) => {
     if (typeof projectId !== "string") return;
-    const dir = path.join(libraryDir, "projects", projectId, "03_export");
+    const dir = exportRootFor(projectId);
+    await fs.mkdir(dir, { recursive: true });
     await shell.openPath(dir);
   });
 

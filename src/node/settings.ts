@@ -9,6 +9,8 @@ export type GpuMode = "auto" | "cpu" | "gpu";
 export interface Settings {
   /** Library location; null means "use the default under Documents". */
   libraryDir: string | null;
+  /** Export location; null means "inside each project's 03_export folder". */
+  exportDir: string | null;
   /** Keep 1 of every N extracted frames on intake. */
   frameSampleEvery: number;
   /** Compute preference for the segmentation pipeline. */
@@ -19,6 +21,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   libraryDir: null,
+  exportDir: null,
   frameSampleEvery: 15, // ~2 fps at 30 fps source — standard for endoscopy annotation
   gpu: "auto",
   dedupThreshold: 8,
@@ -39,6 +42,12 @@ export function normalizeSettings(raw: unknown): Settings {
     out.libraryDir = raw.libraryDir;
   } else if (raw.libraryDir === null) {
     out.libraryDir = null;
+  }
+
+  if (typeof raw.exportDir === "string" && raw.exportDir.trim()) {
+    out.exportDir = raw.exportDir;
+  } else if (raw.exportDir === null) {
+    out.exportDir = null;
   }
 
   if (

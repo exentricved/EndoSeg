@@ -292,6 +292,8 @@ export async function runExport(
   baseDir: string,
   projectId: string,
   onProgress: (p: ExportProgress) => void,
+  /** Folder to write <export-id>/ into; defaults to the project's 03_export/. */
+  exportRoot?: string,
 ): Promise<ExportResult> {
   const projDir = projectDir(baseDir, projectId);
   const segDir  = path.join(projDir, "02_segmentation");
@@ -310,7 +312,7 @@ export async function runExport(
 
   // Create timestamped output directory.
   const exportId = makeExportId();
-  const exportDir = path.join(projDir, "03_export", exportId);
+  const exportDir = path.join(exportRoot ?? path.join(projDir, "03_export"), exportId);
   const imagesDir = path.join(exportDir, "images");
   const labelsDir = path.join(exportDir, "label_maps");
   await fs.mkdir(imagesDir, { recursive: true });

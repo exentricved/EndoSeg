@@ -18,7 +18,6 @@ asarUnpack:
 win:
   target:
     - nsis
-  icon: assets/icon.ico
 nsis:
   oneClick: false
   perMachine: false
@@ -34,7 +33,6 @@ mac:
       arch:
         - universal
   category: public.app-category.medical
-  icon: assets/icon.icns
   identity: null
 
 dmg:

@@ -10,6 +10,7 @@ export const IPC = {
   libraryGet: "library:get",
   libraryCreate: "library:create",
   libraryChooseDir: "library:chooseDir",
+  exportChooseDir: "export:chooseDir",
   projectGet: "project:get",
   projectReveal: "project:reveal",
   settingsGet: "settings:get",
@@ -132,6 +133,8 @@ export interface EndoSegApi {
   getLibrary(): Promise<LibraryState>;
   createProject(name: string): Promise<CreateProjectResult>;
   chooseLibraryDir(): Promise<LibraryState | null>;
+  /** Pick a custom export folder; resolves to the updated settings, or null if cancelled. */
+  chooseExportDir(): Promise<Settings | null>;
   getProject(id: string): Promise<ProjectManifest | null>;
   revealProject(id: string): Promise<void>;
   getSettings(): Promise<Settings>;
