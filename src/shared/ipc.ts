@@ -34,6 +34,7 @@ export const IPC = {
   framesRemove: "frames:remove",
   activityList: "activity:list",
   activityOpenFolder: "activity:openFolder",
+  sessionStart: "session:start",
 } as const;
 
 export interface IntakeProgress {
@@ -97,13 +98,16 @@ export interface AppInfo {
   platform: string;
   electron: string;
   libraryDir: string;
-  /** OS account running the app — recorded on intake, export and status changes. */
+  /** Name entered at start-up ("" until someone signs in) — recorded on intake, export and status changes. */
   user: string;
 }
 
 export interface LibraryState {
   baseDir: string;
   projects: ProjectSummary[];
+  /** False when the folder can't be reached or written (e.g. NAS drive not mapped). */
+  writable: boolean;
+  error?: string;
 }
 
 export interface CreateProjectResult {
@@ -143,6 +147,8 @@ export interface EndoSegApi {
   /** Library-wide activity (all users), newest first. */
   listActivity(): Promise<ActivityEvent[]>;
   openActivityFolder(): Promise<void>;
+  /** Sign in with the person's name for this session; resolves to the updated app info. */
+  startSession(name: string): Promise<AppInfo>;
   checkForUpdates(): Promise<UpdateStatus>;
   onUpdateStatus(cb: (s: UpdateStatus) => void): () => void;
   listCrashes(): Promise<string[]>;

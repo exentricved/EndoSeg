@@ -1,9 +1,17 @@
 # EndoSeg Annotator — Changes (2026-10-22)
 
+## Start-up sign-in
+- On launch, people enter their **name** (last name used is prefilled); that name — not the Windows login — is recorded on intake, export, status changes and frame removals. **Switch** in the top bar changes person.
+- The same screen shows the **library folder** and proves it is writable (create + delete a probe file). An unmapped/offline network drive shows "folder or drive not found — is the network drive connected?" and blocks Continue instead of the app failing to open. Continue pins the shown folder, so a later launch with the NAS offline errors rather than silently using Documents.
+- Default library: `R:kshin-ercp-nas\EndoSeg Library` when that drive exists (SAFE Desktop), else Documents.
+
+## Windows portable build
+- `electron-builder` also produces `EndoSeg-<version>-portable.exe` — no install; run it from the NAS or H: on SAFE/VDI sessions where the local install folder may not persist.
+
 ## Intake / export tracking
-- Every intake records the OS user, the original file name + full path, and sets the project **Ongoing**. **Mark complete / Reopen** on the project page records who changed it and when.
+- Every intake records the person's name, the original file name + full path, and sets the project **Ongoing**. **Mark complete / Reopen** on the project page records who changed it and when.
 - Projects table shows the video, who took it in, and Ongoing/Complete.
-- New **Activity** page: intake started/completed/failed, exports, status changes and frame removals for everyone using the library (filter by user, copy as CSV). Stored as `<library>/activity/<user>.jsonl`, one file per user so shared libraries never have two writers on one file.
+- New **Activity** page: intake started/completed/failed, exports, status changes and frame removals for everyone using the library (filter by user, copy as CSV). Stored as `<library>/activity/<name>.jsonl`, one file per person so shared libraries never have two writers on one file.
 
 ## Split-screen frames (`X`)
 - **X** marks/unmarks the current frame as split-screen (endoscopy + fluoroscopy); marked frames are dimmed with ⊘ in the frame list and never exported.

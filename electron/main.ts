@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from "electron";
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import { path as ffprobePathRaw } from "ffprobe-static";
@@ -17,8 +18,10 @@ import {
   readManifest,
   updateStageOnDisk,
   updateWorkOnDisk,
+  checkLibrary,
+  type LibraryCheck,
 } from "../src/node/library.js";
-import { currentIdentity, logActivity, readActivity, activityDir } from "../src/node/activity.js";
+import { type Identity, logActivity, readActivity, activityDir } from "../src/node/activity.js";
 import { runIntake } from "../src/node/intake.js";
 import {
   listSegFrames,
@@ -55,6 +58,13 @@ let frameServeCount = 0;
 let crashLogger: CrashLogger;
 let settings: Settings;
 let libraryDir = "";
+let libraryCheck: LibraryCheck = { writable: false };
+/** Name entered on the start-up screen; null until someone signs in. */
+let operator: string | null = null;
+
+function currentIdentity(): Identity {
+  return { user: operator ?? "unknown", host: os.hostname() };
+}
 
 // ── Settings + library location ──────────────────────────────────────────────
 
@@ -62,7 +72,14 @@ function settingsPath(): string {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
+// Shared library on the team's SAFE Desktop NAS. Used as the default whenever
+// that drive is mapped; otherwise fall back to Documents.
+const SHARED_LIBRARY_ROOT = "R:\\akshin-ercp-nas";
+
 function defaultLibraryDir(): string {
+  if (process.platform === "win32" && existsSync(SHARED_LIBRARY_ROOT)) {
+    return path.join(SHARED_LIBRARY_ROOT, "EndoSeg Library");
+  }
   return path.join(app.getPath("documents"), "EndoSeg Library");
 }
 
@@ -79,11 +96,15 @@ function exportRootFor(projectId: string): string {
 }
 
 async function ensureLibrary(dir: string): Promise<void> {
-  await fs.mkdir(path.join(dir, "projects"), { recursive: true });
+  libraryCheck = await checkLibrary(dir);
 }
 
 async function libraryState(): Promise<LibraryState> {
-  return { baseDir: libraryDir, projects: await listProjects(libraryDir) };
+  return {
+    baseDir: libraryDir,
+    projects: libraryCheck.writable ? await listProjects(libraryDir) : [],
+    ...libraryCheck,
+  };
 }
 
 // ── Crash handling ───────────────────────────────────────────────────────────
@@ -127,16 +148,35 @@ function installCrashHandlers(): void {
 
 // ── IPC ──────────────────────────────────────────────────────────────────────
 
-function registerIpc(): void {
-  ipcMain.handle(IPC.appInfo, (): AppInfo => ({
+function appInfo(): AppInfo {
+  return {
     version: app.getVersion(),
     platform: process.platform,
     electron: process.versions.electron,
     libraryDir,
-    user: currentIdentity().user,
-  }));
+    user: operator ?? "",
+  };
+}
 
-  ipcMain.handle(IPC.libraryGet, () => libraryState());
+function registerIpc(): void {
+  ipcMain.handle(IPC.appInfo, (): AppInfo => appInfo());
+
+  ipcMain.handle(IPC.libraryGet, async () => {
+    await ensureLibrary(libraryDir); // re-check: the NAS may have (re)connected
+    return libraryState();
+  });
+
+  ipcMain.handle(IPC.sessionStart, async (_e, name: unknown): Promise<AppInfo> => {
+    const clean = typeof name === "string" ? name.trim().slice(0, 80) : "";
+    if (clean) {
+      operator = clean;
+      // Pin the library that was shown at sign-in, so a later launch while the
+      // NAS is offline reports an error instead of silently using Documents.
+      settings = applySettings(settings, { userName: clean, libraryDir });
+      await saveSettings(settingsPath(), settings);
+    }
+    return appInfo();
+  });
 
   ipcMain.handle(IPC.libraryCreate, async (_e, name: unknown) => {
     const clean = typeof name === "string" && name.trim() ? name.trim() : "Untitled";
@@ -295,7 +335,7 @@ function registerIpc(): void {
         projectName: (await readManifest(libraryDir, projectId))?.name,
         file: result.exportDir,
         detail: `${result.frameCount} frames, ${result.labelMapCount} label maps`,
-      });
+      }, currentIdentity());
       return await updateStageOnDisk(
         libraryDir,
         projectId,
@@ -309,7 +349,7 @@ function registerIpc(): void {
         { source: "export", message: e.message, detail: e.stack, projectId, stage: "export" },
         nowIso(),
       );
-      await logActivity(libraryDir, { at: nowIso(), action: "export_failed", projectId, detail: e.message });
+      await logActivity(libraryDir, { at: nowIso(), action: "export_failed", projectId, detail: e.message }, currentIdentity());
       return updateStageOnDisk(libraryDir, projectId, "export", { status: "error", error: e.message }, nowIso());
     }
   });
@@ -341,7 +381,7 @@ function registerIpc(): void {
         projectId,
         projectName: (await readManifest(libraryDir, projectId))?.name,
         detail: `${moved.length} split-screen frame${moved.length > 1 ? "s" : ""} moved to 01_frames/removed`,
-      });
+      }, currentIdentity());
     }
     return moved;
   });

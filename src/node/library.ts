@@ -42,6 +42,34 @@ function manifestPath(baseDir: string, id: string): string {
   return path.join(projectDir(baseDir, id), "project.json");
 }
 
+export interface LibraryCheck {
+  writable: boolean;
+  /** Why the folder can't be used (unreachable share, no permission, ...). */
+  error?: string;
+}
+
+/**
+ * Create the library skeleton and prove we can write to it by creating and
+ * deleting a probe file. Never throws: an unmapped/offline network drive must
+ * not stop the app from opening.
+ */
+export async function checkLibrary(baseDir: string): Promise<LibraryCheck> {
+  const probe = path.join(baseDir, `.endoseg-write-test-${process.pid}`);
+  try {
+    await fs.mkdir(projectsRoot(baseDir), { recursive: true });
+    await fs.writeFile(probe, "ok", "utf8");
+    await fs.rm(probe, { force: true });
+    return { writable: true };
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    const why =
+      e.code === "ENOENT" ? "folder or drive not found — is the network drive connected?"
+      : e.code === "EACCES" || e.code === "EPERM" ? "no permission to write here"
+      : e.message;
+    return { writable: false, error: `Cannot write to ${baseDir}: ${why}` };
+  }
+}
+
 /** Slugify a user-entered name into a filesystem-safe project id. */
 export function slugifyId(name: string): string {
   const base = name

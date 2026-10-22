@@ -8,6 +8,7 @@ import {
   readManifest,
   updateStageOnDisk,
   updateWorkOnDisk,
+  checkLibrary,
   slugifyId,
   projectsRoot,
 } from "./library.js";
@@ -123,5 +124,21 @@ describe("updateWorkOnDisk", () => {
     });
     expect(m?.updatedAt).toBe(T1);
     expect((await listProjects(base))[0].work?.status).toBe("complete");
+  });
+});
+
+describe("checkLibrary", () => {
+  it("creates the skeleton and reports a writable folder, leaving no probe behind", async () => {
+    const lib = path.join(base, "lib");
+    expect(await checkLibrary(lib)).toEqual({ writable: true });
+    expect(await fs.readdir(lib)).toEqual(["projects"]);
+  });
+
+  it("reports (rather than throws) when the drive is missing", async () => {
+    // A plain file where a folder should be: the library can't be created under it.
+    await fs.writeFile(path.join(base, "not-a-folder"), "x");
+    const r = await checkLibrary(path.join(base, "not-a-folder", "lib"));
+    expect(r.writable).toBe(false);
+    expect(r.error).toMatch(/Cannot write to/);
   });
 });

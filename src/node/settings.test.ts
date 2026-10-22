@@ -30,15 +30,18 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ libraryDir: null }).libraryDir).toBeNull();
     expect(normalizeSettings({ exportDir: "E:/out" }).exportDir).toBe("E:/out");
     expect(normalizeSettings({ exportDir: "" }).exportDir).toBeNull();
+    expect(normalizeSettings({ userName: "  Dr. A Shin " }).userName).toBe("Dr. A Shin");
+    expect(normalizeSettings({ userName: "   " }).userName).toBeNull();
   });
 });
 
 describe("applySettings", () => {
   it("patches only provided fields", () => {
-    const base = { libraryDir: "D:/lib", exportDir: null, frameSampleEvery: 6, gpu: "auto" as const };
+    const base = { libraryDir: "D:/lib", exportDir: null, userName: null, frameSampleEvery: 6, gpu: "auto" as const };
     expect(applySettings(base, { frameSampleEvery: 12 })).toEqual({
       libraryDir: "D:/lib",
       exportDir: null,
+      userName: null,
       frameSampleEvery: 12,
       gpu: "auto",
     });
@@ -61,10 +64,11 @@ describe("loadSettings / saveSettings", () => {
 
   it("round-trips saved settings", async () => {
     const file = path.join(dir, "settings.json");
-    await saveSettings(file, { libraryDir: "D:/x", exportDir: "E:/out", frameSampleEvery: 8, gpu: "gpu" });
+    await saveSettings(file, { libraryDir: "D:/x", exportDir: "E:/out", userName: "A", frameSampleEvery: 8, gpu: "gpu" });
     expect(await loadSettings(file)).toEqual({
       libraryDir: "D:/x",
       exportDir: "E:/out",
+      userName: "A",
       frameSampleEvery: 8,
       gpu: "gpu",
     });

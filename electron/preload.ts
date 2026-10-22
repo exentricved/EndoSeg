@@ -40,6 +40,7 @@ const api: EndoSegApi = {
   removeFrames: (projectId, frameIds) => ipcRenderer.invoke(IPC.framesRemove, projectId, frameIds),
   listActivity: () => ipcRenderer.invoke(IPC.activityList),
   openActivityFolder: () => ipcRenderer.invoke(IPC.activityOpenFolder),
+  startSession: (name) => ipcRenderer.invoke(IPC.sessionStart, name),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   onUpdateStatus: (cb) => {
     const listener = (_e: IpcRendererEvent, s: UpdateStatus) => cb(s);

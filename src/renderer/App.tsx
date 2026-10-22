@@ -5,6 +5,7 @@ import type { AppInfo, LibraryState } from "../shared/ipc.js";
 import { StageBar } from "./StageBar.js";
 import { CrashLogView } from "./CrashLogView.js";
 import { ActivityView } from "./ActivityView.js";
+import { SignInView } from "./SignInView.js";
 import { SettingsView } from "./SettingsView.js";
 import { ProjectDetail } from "./ProjectDetail.js";
 import { StageBadge, formatTime } from "./ui.js";
@@ -24,6 +25,7 @@ export function App() {
   const [view, setView] = useState<View>({ kind: "hub" });
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [switchingUser, setSwitchingUser] = useState(false);
 
   const refresh = useCallback(async () => {
     setLibrary(await window.endoseg.getLibrary());
@@ -47,6 +49,23 @@ export function App() {
     await refresh();
     setView({ kind: "project", id });
   }, [newName, refresh]);
+
+  // Nothing is usable until someone has entered their name and the library is writable.
+  if (!info) return null;
+  if (!info.user || switchingUser) {
+    return (
+      <div className="app">
+        <SignInView
+          onSignedIn={(ai) => {
+            setInfo(ai);
+            setSwitchingUser(false);
+            setView({ kind: "hub" });
+            void refresh();
+          }}
+        />
+      </div>
+    );
+  }
 
   // Annotator runs as a full-window view with its own toolbar/sidebar.
   // EndoSeg adds only a thin back bar above it.
@@ -101,7 +120,13 @@ export function App() {
           </span>
           <span className="brand-name">EndoSeg</span>
           <span className="version">{info ? `v${info.version}` : ""}</span>
-          {info?.user && <span className="version" title="Signed-in account — recorded on intake, export and status changes">{info.user}</span>}
+          <button
+            className="link user-chip"
+            title="Recorded on intake, export and status changes — click to switch person"
+            onClick={() => setSwitchingUser(true)}
+          >
+            {info.user} · switch
+          </button>
         </div>
         <nav className="nav">
           <button
@@ -144,6 +169,13 @@ export function App() {
               </button>
             </div>
           </div>
+
+          {library && !library.writable && (
+            <div className="library-error">
+              ⚠ {library.error ?? "The library folder can't be used."} Projects can't be opened or saved until it is
+              reachable — check the network drive, then Refresh, or pick another folder in Settings.
+            </div>
+          )}
 
           {creating && (
             <div className="new-project">

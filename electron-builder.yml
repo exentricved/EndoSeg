@@ -18,6 +18,11 @@ asarUnpack:
 win:
   target:
     - nsis
+    # Single self-contained exe, no install — for SAFE Desktop / VDI sessions
+    # where the local install folder may not persist. Keep it on the NAS or H:.
+    - portable
+portable:
+  artifactName: ${productName}-${version}-portable.exe
 nsis:
   oneClick: false
   perMachine: false

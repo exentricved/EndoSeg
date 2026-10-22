@@ -1,10 +1,9 @@
 // Library-wide activity log: who took in which video, who exported, status
-// changes. Lives in <library>/activity/<user>.jsonl — one append-only file per
-// OS account, so people sharing a library on a network drive never write to
-// the same file. Pure Node so it is unit-testable.
+// changes. Lives in <library>/activity/<name>.jsonl — one append-only file per
+// person (the name entered at start-up), so people sharing a library on a
+// network drive never write to the same file. Pure Node so it is unit-testable.
 
 import { promises as fs } from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { WorkStatus } from "../core/stages.js";
 
@@ -32,19 +31,10 @@ export interface ActivityEvent {
   detail?: string;
 }
 
+/** Who is acting: the name entered at start-up, plus the computer it was entered on. */
 export interface Identity {
   user: string;
   host: string;
-}
-
-/** The OS account running the app (on SAFE Desktop this is the person's login). */
-export function currentIdentity(): Identity {
-  let user = "";
-  try {
-    user = os.userInfo().username;
-  } catch { /* some sandboxes refuse — fall back to env */ }
-  user ||= process.env.USERNAME || process.env.USER || "unknown";
-  return { user, host: os.hostname() };
 }
 
 export function activityDir(baseDir: string): string {
@@ -52,7 +42,7 @@ export function activityDir(baseDir: string): string {
 }
 
 function logFile(baseDir: string, user: string): string {
-  const safe = user.replace(/[^a-zA-Z0-9._-]+/g, "_") || "unknown";
+  const safe = user.trim().replace(/[^a-zA-Z0-9._-]+/g, "_") || "unknown";
   return path.join(activityDir(baseDir), `${safe}.jsonl`);
 }
 
@@ -60,7 +50,7 @@ function logFile(baseDir: string, user: string): string {
 export async function logActivity(
   baseDir: string,
   event: Omit<ActivityEvent, "user" | "host">,
-  who: Identity = currentIdentity(),
+  who: Identity,
 ): Promise<void> {
   try {
     await fs.mkdir(activityDir(baseDir), { recursive: true });

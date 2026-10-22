@@ -11,6 +11,8 @@ export interface Settings {
   libraryDir: string | null;
   /** Export location; null means "inside each project's 03_export folder". */
   exportDir: string | null;
+  /** Last name entered at start-up — only used to prefill the sign-in box. */
+  userName: string | null;
   /** Keep 1 of every N extracted frames on intake. */
   frameSampleEvery: number;
   /** Compute preference for the segmentation pipeline. */
@@ -20,6 +22,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   libraryDir: null,
   exportDir: null,
+  userName: null,
   frameSampleEvery: 4, // ~7.5 fps at 30 fps source — dense enough for frame-to-frame tracking
   gpu: "auto",
 };
@@ -39,6 +42,10 @@ export function normalizeSettings(raw: unknown): Settings {
     out.libraryDir = raw.libraryDir;
   } else if (raw.libraryDir === null) {
     out.libraryDir = null;
+  }
+
+  if (typeof raw.userName === "string" && raw.userName.trim()) {
+    out.userName = raw.userName.trim().slice(0, 80);
   }
 
   if (typeof raw.exportDir === "string" && raw.exportDir.trim()) {

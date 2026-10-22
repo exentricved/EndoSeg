@@ -184,3 +184,28 @@ tr.attention { background: rgba(239, 68, 68, 0.08); }
   max-width: 820px; margin-bottom: 14px; padding: 12px 16px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
 }
+
+/* Start-up sign-in */
+.signin { flex: 1; display: grid; place-items: center; padding: 24px 16px; overflow: auto; }
+.signin-card {
+  width: min(520px, 100%); background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 24px; display: flex; flex-direction: column;
+}
+.signin-card input {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 9px 10px; font-size: 15px;
+}
+.signin-label { font-weight: 600; font-size: 13px; margin: 14px 0 6px; }
+.signin-hint { font-size: 12px; margin: 6px 0 0; }
+.signin-lib { display: flex; flex-direction: column; gap: 8px; }
+.signin-lib .path { word-break: break-all; }
+.signin-lib-actions { display: flex; gap: 8px; }
+.signin-ok { color: var(--done); font-size: 13px; margin: 8px 0 0; }
+.signin-err { color: var(--error); font-size: 13px; margin: 8px 0 0; }
+.signin-go { margin-top: 20px; align-self: flex-end; }
+.user-chip { font-size: 12px; margin-left: 6px; }
+.library-error {
+  margin-bottom: 14px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+  border: 1px solid var(--error); color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
