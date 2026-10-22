@@ -3,11 +3,9 @@ import {
   IPC,
   type EndoSegApi,
   type IntakeProgress,
-  type DedupProgress,
   type ExportProgress,
   type UpdateStatus,
 } from "../src/shared/ipc.js";
-// FrameReviewResult only needed at the type level — imported via EndoSegApi
 
 // Minimal, explicit bridge. The renderer gets only these async methods —
 // no direct Node/Electron access (contextIsolation stays on).
@@ -28,12 +26,6 @@ const api: EndoSegApi = {
     ipcRenderer.on(IPC.intakeProgress, listener);
     return () => ipcRenderer.removeListener(IPC.intakeProgress, listener);
   },
-  runDedup: (projectId) => ipcRenderer.invoke(IPC.dedupRun, projectId),
-  onDedupProgress: (cb) => {
-    const listener = (_e: IpcRendererEvent, p: DedupProgress) => cb(p);
-    ipcRenderer.on(IPC.dedupProgress, listener);
-    return () => ipcRenderer.removeListener(IPC.dedupProgress, listener);
-  },
   listSegFrames: (projectId) => ipcRenderer.invoke(IPC.segListFrames, projectId),
   loadSegmentation: (projectId) => ipcRenderer.invoke(IPC.segLoad, projectId),
   saveSegmentation: (projectId, snapshot) => ipcRenderer.invoke(IPC.segSave, projectId, snapshot),
@@ -53,7 +45,6 @@ const api: EndoSegApi = {
   listCrashes: () => ipcRenderer.invoke(IPC.crashList),
   readCrash: (file) => ipcRenderer.invoke(IPC.crashRead, file),
   openCrashFolder: () => ipcRenderer.invoke(IPC.crashOpenFolder),
-  getFrameReview: (projectId) => ipcRenderer.invoke(IPC.framesReview, projectId),
 };
 
 contextBridge.exposeInMainWorld("endoseg", api);

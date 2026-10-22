@@ -1,7 +1,7 @@
 # EndoSeg (desktop app)
 
 Offline Electron desktop app for the sphincterotomy/ERCP video pipeline:
-**Intake → Dedup → Segmentation → Export**. See [`../EndoSeg.md`](../EndoSeg.md)
+**Intake → Segmentation → Export**. See [`../EndoSeg.md`](../EndoSeg.md)
 for the full specification.
 
 ## Built so far (phases 1–3)

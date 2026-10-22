@@ -36,10 +36,18 @@ describe("parseManifest", () => {
 
   it("drops non-numeric counts but keeps numeric ones", () => {
     const p = createProject("c", "C", T0) as any;
-    p.stages.dedup.counts = { kept: 10, dropped: "lots" };
+    p.stages.intake.counts = { frames: 10, sources: "lots" };
     const r = parseManifest(p);
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.stages.dedup.counts).toEqual({ kept: 10 });
+    if (r.ok) expect(r.value.stages.intake.counts).toEqual({ frames: 10 });
+  });
+
+  it("still reads manifests written with the removed dedup stage", () => {
+    const p = createProject("c", "C", T0) as any;
+    p.stages.dedup = { status: "done", counts: { kept: 3 } };
+    const r = parseManifest(p);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(Object.keys(r.value.stages)).toEqual(["intake", "segmentation", "export"]);
   });
 
   it("rejects non-object input", () => {
@@ -53,15 +61,14 @@ describe("summarize", () => {
   it("reports current stage, status and completion", () => {
     let p = createProject("c", "Case C", T0);
     p = setStage(p, "intake", { status: "done" }, T1);
-    p = setStage(p, "dedup", { status: "in_progress" }, T1);
+    p = setStage(p, "segmentation", { status: "in_progress" }, T1);
     const s = summarize(p);
-    expect(s.currentStage).toBe("dedup");
+    expect(s.currentStage).toBe("segmentation");
     expect(s.currentStatus).toBe("in_progress");
-    expect(s.completion).toBe(0.25);
+    expect(s.completion).toBeCloseTo(1 / 3);
     expect(s.stageStatuses.map((x) => x.status)).toEqual([
       "done",
       "in_progress",
-      "pending",
       "pending",
     ]);
   });

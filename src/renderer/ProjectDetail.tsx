@@ -5,12 +5,11 @@ import {
   type ProjectManifest,
   type StageId,
 } from "../core/stages.js";
-import type { IntakeProgress, DedupProgress, ExportProgress } from "../shared/ipc.js";
+import type { IntakeProgress, ExportProgress } from "../shared/ipc.js";
 import { StageBadge, formatTime } from "./ui.js";
 
 const STAGE_HINT: Record<StageId, string> = {
   intake: "Upload a sphincterotomy video — copied into the project, hashed, and frames sampled.",
-  dedup: "Filter near-duplicate frames (perceptual hash).",
   segmentation: "Run ML segmentation, then review/correct masks in the annotator.",
   export: "Package annotated frames + multi-class label maps (pixel = class ID) + metadata.json into 03_export/.",
 };
@@ -19,11 +18,6 @@ const INTAKE_LABEL: Record<IntakeProgress["phase"], string> = {
   copy: "Copying & hashing video…",
   probe: "Reading video metadata…",
   extract: "Extracting frames…",
-};
-
-const DEDUP_LABEL: Record<DedupProgress["phase"], string> = {
-  hash: "Hashing frames…",
-  copy: "Copying kept frames…",
 };
 
 const EXPORT_LABEL: Record<ExportProgress["phase"], string> = {
@@ -35,12 +29,10 @@ export function ProjectDetail({
   id,
   onBack,
   onOpenAnnotator,
-  onOpenFrameReview,
 }: {
   id: string;
   onBack: () => void;
   onOpenAnnotator: (id: string) => void;
-  onOpenFrameReview: (id: string) => void;
 }) {
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [missing, setMissing] = useState(false);
@@ -79,23 +71,6 @@ export function ProjectDetail({
     }
   }, [id]);
 
-  const runDedup = useCallback(async () => {
-    setRunning("dedup");
-    setStatusLine(DEDUP_LABEL.hash);
-    unsub.current = window.endoseg.onDedupProgress((p) =>
-      setStatusLine(DEDUP_LABEL[p.phase] + (p.frames != null ? ` (${p.frames} frames)` : "")),
-    );
-    try {
-      const updated = await window.endoseg.runDedup(id);
-      if (updated) setManifest(updated);
-    } finally {
-      unsub.current?.();
-      unsub.current = null;
-      setRunning(null);
-      setStatusLine(null);
-    }
-  }, [id]);
-
   const runExportStage = useCallback(async () => {
     setRunning("export");
     setStatusLine(EXPORT_LABEL.frames);
@@ -124,7 +99,6 @@ export function ProjectDetail({
   if (!manifest) return <main className="detail"><p className="muted">Loading…</p></main>;
 
   const busy = running !== null;
-  const intakeDone = manifest.stages.intake.status === "done";
 
   return (
     <main className="detail">
@@ -167,26 +141,6 @@ export function ProjectDetail({
                   <button onClick={() => void runIntake()} disabled={busy}>
                     {running === "intake" ? "Working…" : st.status === "done" ? "Re-import…" : "Add video…"}
                   </button>
-                ) : stage === "dedup" ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "stretch" }}>
-                    <button
-                      onClick={() => void runDedup()}
-                      disabled={busy || !intakeDone}
-                      title={intakeDone ? "" : "Run intake first"}
-                    >
-                      {running === "dedup" ? "Working…" : st.status === "done" ? "Re-run…" : "Run dedup"}
-                    </button>
-                    {st.status === "done" && (
-                      <button
-                        className="secondary"
-                        onClick={() => onOpenFrameReview(id)}
-                        disabled={busy}
-                        title="Browse kept and dropped frames"
-                      >
-                        Review frames
-                      </button>
-                    )}
-                  </div>
                 ) : stage === "segmentation" ? (
                   <button
                     onClick={() => onOpenAnnotator(id)}

@@ -37,7 +37,6 @@ describe("createProjectOnDisk", () => {
     for (const sub of [
       "00_intake/source",
       "01_frames/raw",
-      "01_frames/kept",
       "02_segmentation/masks",
       "03_export",
       "autosave",
@@ -77,7 +76,7 @@ describe("updateStageOnDisk + listProjects", () => {
 
     const list = await listProjects(base);
     expect(list).toHaveLength(1);
-    expect(list[0].currentStage).toBe("dedup");
+    expect(list[0].currentStage).toBe("segmentation");
   });
 
   it("ignores non-project junk in the projects dir", async () => {

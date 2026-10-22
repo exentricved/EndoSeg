@@ -18,8 +18,6 @@ export const IPC = {
   intakePickVideo: "intake:pickVideo",
   intakeRun: "intake:run",
   intakeProgress: "intake:progress",
-  dedupRun: "dedup:run",
-  dedupProgress: "dedup:progress",
   segListFrames: "segmentation:listFrames",
   segLoad: "segmentation:load",
   segSave: "segmentation:save",
@@ -31,17 +29,10 @@ export const IPC = {
   crashList: "crash:list",
   crashRead: "crash:read",
   crashOpenFolder: "crash:openFolder",
-  framesReview: "frames:review",
 } as const;
 
 export interface IntakeProgress {
   phase: "copy" | "probe" | "extract";
-  frames?: number;
-}
-
-export interface DedupProgress {
-  phase: "hash" | "copy";
-  /** Frames hashed so far (during the "hash" phase). */
   frames?: number;
 }
 
@@ -96,21 +87,6 @@ export interface UpdateStatus {
   message?: string;
 }
 
-export interface FrameReviewItem {
-  file: string;
-  url: string;
-  kept: boolean;
-  distance?: number;
-  representative: string;
-}
-
-export interface FrameReviewResult {
-  items: FrameReviewItem[];
-  kept: number;
-  dropped: number;
-  total: number;
-}
-
 export interface AppInfo {
   version: string;
   platform: string;
@@ -142,9 +118,7 @@ export interface EndoSegApi {
   pickVideo(): Promise<string | null>;
   runIntake(projectId: string, sourcePath: string): Promise<ProjectManifest | null>;
   onIntakeProgress(cb: (p: IntakeProgress) => void): () => void;
-  runDedup(projectId: string): Promise<ProjectManifest | null>;
-  onDedupProgress(cb: (p: DedupProgress) => void): () => void;
-  /** List the frames to annotate (prefers deduped 01_frames/kept, falls back to raw). */
+  /** List the frames to annotate (01_frames/raw; legacy projects fall back to kept). */
   listSegFrames(projectId: string): Promise<SegFramesResult>;
   /** Load a previously saved annotation snapshot (02_segmentation/annotations.leus), or null. */
   loadSegmentation(projectId: string): Promise<unknown | null>;
@@ -160,7 +134,6 @@ export interface EndoSegApi {
   listCrashes(): Promise<string[]>;
   readCrash(file: string): Promise<string | null>;
   openCrashFolder(): Promise<void>;
-  getFrameReview(projectId: string): Promise<FrameReviewResult | null>;
 }
 
 declare global {

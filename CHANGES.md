@@ -1,3 +1,17 @@
+# EndoSeg Annotator — Changes (2026-10-22)
+
+## Optical tracking (`T`)
+- **Track next → [T]** carries the current frame's polygons + pixel masks onto the next frame and moves there; **← Track prev** pulls the previous frame's annotations onto the current one.
+- Pyramidal Lucas-Kanade optical flow (`src/core/optflow.ts`, pure TS) with a forward-backward check. Polygon vertices follow their own flow; vertices that can't be tracked (low texture, occlusion) follow a similarity transform fitted to the polygon's tracked points. Masks move by a fitted similarity transform.
+- One tracking step = one undo (`Ctrl+Z`). Tracked annotations replace the destination frame's — review before saving.
+
+## Dedup stage removed
+- Pipeline is now **Intake → Segmentation → Export**; every extracted frame goes to the annotator.
+- Old projects still open (the stale `dedup` stage is ignored; frames from `01_frames/raw`, falling back to `kept`).
+
+## Frame sampling default
+- `frameSampleEvery` default 15 → **4** (≈7.5 fps at 30 fps) so consecutive frames are close enough to track. Settings saved with the old default of 15 are migrated to 4; other custom values are kept.
+
 # EndoSeg Annotator — Changes (2026-06-25)
 
 ## Frame sampling default

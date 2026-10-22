@@ -3,6 +3,15 @@
 
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { SegFrame } from "../shared/ipc.js";
+import {
+  type Gray,
+  type Similarity,
+  toGray,
+  globalMotion,
+  trackPolygon,
+  trackRegion,
+  sampleMask,
+} from "../core/optflow.js";
 
 // ---- Class catalog ----
 const CLASSES = [
@@ -49,6 +58,8 @@ interface NativeSnapshot {
 
 // ---- Pure helpers ----
 let _uid = 0;
+/** Max width frames are downscaled to for optical-flow tracking. */
+const TRACK_MAX_W = 960;
 const uid = () => `p${++_uid}`;
 
 function clsById(id: number): ClassDef | undefined {
@@ -170,6 +181,8 @@ export function SegmentationView({ projectId }: { projectId: string }) {
   const [copyFromInput, setCopyFromInput] = useState("");
   const [autoDwBusy, setAutoDwBusy]     = useState(false);
   const [showMasks, setShowMasks]       = useState(true);
+  const [trackBusy, setTrackBusy]       = useState(false);
+  const [trackMsg, setTrackMsg]         = useState<string | null>(null);
 
   // Refs mirrored from state for use inside stable callbacks.
   const canvasRef       = useRef<HTMLCanvasElement>(null);
@@ -205,7 +218,8 @@ export function SegmentationView({ projectId }: { projectId: string }) {
   type UndoEntry =
     | { kind: "poly-add";    frameId: string; polyId: string }
     | { kind: "poly-remove"; frameId: string; poly: Polygon }
-    | { kind: "mask"; frameId: string; classId: number; w: number; h: number; data: Uint8ClampedArray | null };
+    | { kind: "mask"; frameId: string; classId: number; w: number; h: number; data: Uint8ClampedArray | null }
+    | { kind: "batch"; entries: UndoEntry[] };
   const undoStackRef = useRef<UndoEntry[]>([] as UndoEntry[]);
 
   // ---- Synced setters ----
@@ -443,8 +457,11 @@ export function SegmentationView({ projectId }: { projectId: string }) {
   }, []);
 
   const undo = useCallback(() => {
-    const entry = undoStackRef.current.pop();
-    if (!entry) return;
+    const top = undoStackRef.current.pop();
+    if (!top) return;
+    // A batch (e.g. one tracking step) is undone as a unit, newest change first.
+    const entries = top.kind === "batch" ? [...top.entries].reverse() : [top];
+    for (const entry of entries) {
     if (entry.kind === "poly-add") {
       const list = annsRef.current.get(entry.frameId);
       if (list) annsRef.current.set(entry.frameId, list.filter((p) => p.id !== entry.polyId));
@@ -466,6 +483,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         }
         cv.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(entry.data), entry.w, entry.h), 0, 0);
       }
+    }
     }
     drawScene();
   }, [drawScene, refreshAnnCount]);
@@ -653,6 +671,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       if (e.key === "e" || e.key === "E") { setTool_("eraser");  return; }
       if (e.key === "l" || e.key === "L") { setTool_("lasso");   return; }
       if (e.key === "m" || e.key === "M") { toggleMasks(); return; }
+      if (e.key === "t" || e.key === "T") { void trackForwardRef.current(); return; }
       // Brush size with [ ]
       if (e.key === "[") {
         const next = Math.max(1, brushRadiusRef.current - 5);
@@ -971,6 +990,118 @@ export function SegmentationView({ projectId }: { projectId: string }) {
     refreshAnnCount(); drawScene();
   }, [drawScene, refreshAnnCount]);
 
+  // ---- Optical-flow tracking: carry annotations from one frame to another ----
+  // Frames are tracked at <= TRACK_MAX_W px wide for speed; results are mapped
+  // back to full resolution. Grayscale frames are cached for the next step.
+  const grayCacheRef = useRef<Map<string, Gray>>(new Map());
+
+  const loadTrackGray = useCallback(async (frame: SegFrame): Promise<{ gray: Gray; k: number }> => {
+    const sz = frameSizesRef.current.get(frame.frameId);
+    const w = sz?.w || frame.width;
+    const h = sz?.h || frame.height;
+    const k = Math.min(1, TRACK_MAX_W / Math.max(1, w));
+    const cached = grayCacheRef.current.get(frame.frameId);
+    if (cached) return { gray: cached, k };
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    await new Promise<void>((res, rej) => {
+      img.onload = () => res();
+      img.onerror = () => rej(new Error("Frame load failed"));
+      img.src = frame.url;
+    });
+    const tw = Math.max(1, Math.round(w * k));
+    const th = Math.max(1, Math.round(h * k));
+    const cv = document.createElement("canvas");
+    cv.width = tw; cv.height = th;
+    const ctx = cv.getContext("2d")!;
+    ctx.drawImage(img, 0, 0, tw, th);
+    const gray = toGray(ctx.getImageData(0, 0, tw, th).data, tw, th);
+    const cache = grayCacheRef.current;
+    cache.set(frame.frameId, gray);
+    while (cache.size > 4) cache.delete(cache.keys().next().value!);
+    return { gray, k };
+  }, []);
+
+  const trackFrame = useCallback(async (srcIdx: number, dstIdx: number) => {
+    const srcFrame = framesRef.current[srcIdx];
+    const dstFrame = framesRef.current[dstIdx];
+    if (!srcFrame || !dstFrame || srcIdx === dstIdx) return;
+    const srcPolys = annsRef.current.get(srcFrame.frameId) ?? [];
+    const srcMasks = pixelMasksRef.current.get(srcFrame.frameId);
+    if (!srcPolys.length && !srcMasks?.size) {
+      setTrackMsg(`Frame ${srcIdx + 1} has no annotations to track`);
+      return;
+    }
+    setTrackBusy(true); setTrackMsg(null);
+    try {
+      const [{ gray: prev, k }, { gray: next }] = await Promise.all([loadTrackGray(srcFrame), loadTrackGray(dstFrame)]);
+      const toS = (p: Pt): Pt => ({ x: p.x * k, y: p.y * k });
+      const fromS = (p: Pt): Pt => ({ x: p.x / k, y: p.y / k });
+      const fallback = globalMotion(prev, next);
+      const undoEntries: UndoEntry[] = [];
+
+      // Polygons: replace the destination's polygons with tracked copies.
+      let tracked = 0;
+      if (srcPolys.length) {
+        for (const old of annsRef.current.get(dstFrame.frameId) ?? []) {
+          undoEntries.push({ kind: "poly-remove", frameId: dstFrame.frameId, poly: old });
+        }
+        const moved: Polygon[] = srcPolys.map((p) => {
+          const r = trackPolygon(prev, next, p.points.map(toS), fallback);
+          if (r.trackedFraction >= 0.5) tracked++;
+          return { id: uid(), classId: p.classId, points: r.points.map(fromS) };
+        });
+        annsRef.current.set(dstFrame.frameId, moved);
+        for (const p of moved) undoEntries.push({ kind: "poly-add", frameId: dstFrame.frameId, polyId: p.id });
+      }
+
+      // Pixel masks: move each class mask by its fitted similarity transform.
+      let masksMoved = 0;
+      if (srcMasks) {
+        for (const [cid, srcCv] of srcMasks) {
+          if (!srcCv.width || !srcCv.height) continue;
+          const alpha = srcCv.getContext("2d")!.getImageData(0, 0, srcCv.width, srcCv.height).data;
+          const pts = sampleMask(alpha, srcCv.width, srcCv.height).map(toS);
+          if (!pts.length) continue;
+          const { transform: t } = trackRegion(prev, next, pts, fallback);
+          const full: Similarity = { a: t.a, b: t.b, tx: t.tx / k, ty: t.ty / k };
+          undoEntries.push(snapshotMask(dstFrame.frameId, cid));
+          const dst = ensureMaskCanvas(dstFrame.frameId, cid, srcCv.width, srcCv.height);
+          const dctx = dst.getContext("2d")!;
+          dctx.save();
+          dctx.setTransform(1, 0, 0, 1, 0, 0);
+          dctx.clearRect(0, 0, dst.width, dst.height);
+          dctx.imageSmoothingEnabled = false;
+          dctx.setTransform(full.a, full.b, -full.b, full.a, full.tx, full.ty);
+          dctx.drawImage(srcCv, 0, 0);
+          dctx.restore();
+          masksMoved++;
+        }
+      }
+
+      if (undoEntries.length) pushUndo({ kind: "batch", entries: undoEntries });
+      const parts: string[] = [];
+      if (srcPolys.length) parts.push(`${tracked}/${srcPolys.length} polygons tracked`);
+      if (masksMoved) parts.push(`${masksMoved} mask${masksMoved > 1 ? "s" : ""} moved`);
+      setTrackMsg(`Tracked from frame ${srcIdx + 1}: ${parts.join(", ")} — review before saving`);
+      refreshAnnCount(); drawScene();
+    } catch (e) {
+      setTrackMsg(`Tracking failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setTrackBusy(false);
+    }
+  }, [drawScene, ensureMaskCanvas, loadTrackGray, pushUndo, refreshAnnCount, snapshotMask]);
+
+  /** Track the current frame's annotations onto the next frame and move there. */
+  const trackForward = useCallback(async () => {
+    const i = frameIdxRef.current;
+    if (i >= framesRef.current.length - 1) return;
+    navigateTo(i + 1);
+    await trackFrame(i, i + 1);
+  }, [navigateTo, trackFrame]);
+  const trackForwardRef = useRef(trackForward);
+  useEffect(() => { trackForwardRef.current = trackForward; }, [trackForward]);
+
   // ---- Auto-annotate duodenal wall by color range ----
   const autoDuodenalWall = useCallback(async () => {
     const frame = framesRef.current[frameIdxRef.current];
@@ -1065,7 +1196,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         {/* Frame list sidebar (left) */}
         <div style={{ width: 200, flexShrink: 0, borderRight: "1px solid #1e2d40", overflowY: "auto", display: "flex", flexDirection: "column" }}>
           {frames.length === 0 ? (
-            <div style={{ padding: 12, color: "#475569", fontSize: 12, lineHeight: 1.5 }}>No frames found.<br />Run Intake &amp; Dedup first.</div>
+            <div style={{ padding: 12, color: "#475569", fontSize: 12, lineHeight: 1.5 }}>No frames found.<br />Run Intake first.</div>
           ) : (
             frames.map((f, i) => {
               const hasAnns   = (annsRef.current.get(f.frameId)?.length ?? 0) > 0;
@@ -1226,6 +1357,36 @@ export function SegmentationView({ projectId }: { projectId: string }) {
                 <button className="secondary" onClick={() => copyFromFrame(frameIdx - 1)} style={{ fontSize: 11, padding: "2px 8px" }} title="Quick-copy from previous frame">
                   ← Copy prev
                 </button>
+              )}
+            </div>
+
+            <PanelDivider />
+
+            {/* Optical-flow tracking */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 10, color: "#64748b" }}>Optical tracking</span>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  className="secondary"
+                  disabled={trackBusy || frameIdx === 0}
+                  onClick={() => void trackFrame(frameIdx - 1, frameIdx)}
+                  style={{ flex: 1, fontSize: 11, padding: "2px 8px" }}
+                  title="Move the previous frame's polygons + masks onto this frame using optical flow"
+                >
+                  ← Track prev
+                </button>
+                <button
+                  className="secondary"
+                  disabled={trackBusy || frameIdx >= frames.length - 1}
+                  onClick={() => void trackForward()}
+                  style={{ flex: 1, fontSize: 11, padding: "2px 8px" }}
+                  title="Carry this frame's annotations to the next frame and go there [T]"
+                >
+                  Track next → [T]
+                </button>
+              </div>
+              {(trackBusy || trackMsg) && (
+                <span style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.4 }}>{trackBusy ? "Tracking…" : trackMsg}</span>
               )}
             </div>
 

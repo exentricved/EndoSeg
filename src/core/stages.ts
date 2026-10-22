@@ -2,12 +2,11 @@
 // Kept free of Electron/Node APIs so it can be unit-tested in isolation and
 // reused by both the main process (disk IO) and the renderer (display).
 
-export const STAGES = ["intake", "dedup", "segmentation", "export"] as const;
+export const STAGES = ["intake", "segmentation", "export"] as const;
 export type StageId = (typeof STAGES)[number];
 
 export const STAGE_LABELS: Record<StageId, string> = {
   intake: "Intake",
-  dedup: "Dedup",
   segmentation: "Segmentation",
   export: "Export",
 };
@@ -41,7 +40,6 @@ export interface ProjectManifest {
 function pendingStages(): Record<StageId, StageState> {
   return {
     intake: { status: "pending" },
-    dedup: { status: "pending" },
     segmentation: { status: "pending" },
     export: { status: "pending" },
   };

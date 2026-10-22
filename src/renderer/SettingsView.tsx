@@ -128,32 +128,6 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
 
       <section className="setting-row">
         <div className="setting-label">
-          <strong>Duplicate filtering</strong>
-          <p className="muted">
-            How aggressively near-identical frames are removed in the Dedup stage.
-            Higher = more frames treated as duplicates (perceptual-hash distance, 0–64).
-          </p>
-        </div>
-        <div className="setting-control">
-          <label>
-            Threshold
-            <input
-              type="number"
-              min={0}
-              max={64}
-              value={settings.dedupThreshold}
-              onChange={(e) => {
-                if (e.target.value === "") return; // don't treat a cleared field as 0
-                const n = Number(e.target.value);
-                if (Number.isInteger(n) && n >= 0 && n <= 64) void patch({ dedupThreshold: n });
-              }}
-            />
-          </label>
-        </div>
-      </section>
-
-      <section className="setting-row">
-        <div className="setting-label">
           <strong>Compute</strong>
           <p className="muted">GPU preference for segmentation. "Auto" uses GPU when available.</p>
         </div>

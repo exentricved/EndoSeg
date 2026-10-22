@@ -15,16 +15,13 @@ export interface Settings {
   frameSampleEvery: number;
   /** Compute preference for the segmentation pipeline. */
   gpu: GpuMode;
-  /** Max perceptual-hash Hamming distance (0-64) to treat frames as duplicates. */
-  dedupThreshold: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   libraryDir: null,
   exportDir: null,
-  frameSampleEvery: 15, // ~2 fps at 30 fps source — standard for endoscopy annotation
+  frameSampleEvery: 4, // ~7.5 fps at 30 fps source — dense enough for frame-to-frame tracking
   gpu: "auto",
-  dedupThreshold: 8,
 };
 
 const GPU_MODES: GpuMode[] = ["auto", "cpu", "gpu"];
@@ -63,22 +60,22 @@ export function normalizeSettings(raw: unknown): Settings {
     out.gpu = raw.gpu as GpuMode;
   }
 
-  if (
-    typeof raw.dedupThreshold === "number" &&
-    Number.isInteger(raw.dedupThreshold) &&
-    raw.dedupThreshold >= 0 &&
-    raw.dedupThreshold <= 64
-  ) {
-    out.dedupThreshold = raw.dedupThreshold;
-  }
-
   return out;
 }
+
+/** Old default sampling, superseded by every-4th-frame when dedup was removed. */
+const LEGACY_SAMPLE_DEFAULT = 15;
 
 export async function loadSettings(file: string): Promise<Settings> {
   try {
     const txt = await fs.readFile(file, "utf8");
-    return normalizeSettings(JSON.parse(txt));
+    const raw: unknown = JSON.parse(txt);
+    // Files from the dedup era always contain dedupThreshold; if they still hold
+    // the old default sampling, move them to the new default.
+    if (isObject(raw) && "dedupThreshold" in raw && raw.frameSampleEvery === LEGACY_SAMPLE_DEFAULT) {
+      raw.frameSampleEvery = DEFAULT_SETTINGS.frameSampleEvery;
+    }
+    return normalizeSettings(raw);
   } catch {
     return { ...DEFAULT_SETTINGS };
   }

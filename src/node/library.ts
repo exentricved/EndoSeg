@@ -23,7 +23,6 @@ import {
 const STAGE_DIRS = [
   "00_intake/source",
   "01_frames/raw",
-  "01_frames/kept",
   "02_segmentation/masks",
   "03_export",
   "autosave",

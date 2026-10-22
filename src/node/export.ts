@@ -255,7 +255,7 @@ async function buildLabelMap(
 const FRAME_RE = /\.(png|jpg|jpeg)$/i;
 
 async function findFrameDir(baseDir: string, projectId: string): Promise<string | null> {
-  for (const sub of ["kept", "raw"] as const) {
+  for (const sub of ["raw", "kept"] as const) {
     const dir = path.join(projectDir(baseDir, projectId), "01_frames", sub);
     try {
       const files = await fs.readdir(dir);
@@ -307,7 +307,7 @@ export async function runExport(
     if (snap.version === 1 && Array.isArray(snap.frames)) annotatedFrames = snap.frames;
   } catch { /* no annotations yet — export will be empty */ }
 
-  // Locate source frames (deduped kept preferred, raw fallback).
+  // Locate source frames (raw; legacy deduped projects fall back to kept).
   const framesDir = await findFrameDir(baseDir, projectId);
 
   // Create timestamped output directory.
