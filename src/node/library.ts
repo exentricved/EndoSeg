@@ -61,12 +61,36 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-/** Write JSON atomically: temp file in the same dir, then rename. */
-export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+const RETRYABLE = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+/**
+ * fs.rename with retries. On Windows — especially SMB/NAS shares — antivirus,
+ * the indexer or the file server can briefly hold a handle on the target.
+ */
+export async function renameWithRetry(from: string, to: string, attempts = 8): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? "";
+      if (i >= attempts - 1 || !RETRYABLE.has(code)) throw err;
+      await new Promise((r) => setTimeout(r, 50 * 2 ** i));
+    }
+  }
+}
+
+/** Write a file atomically: temp file in the same dir, then rename over the target. */
+export async function writeFileAtomic(file: string, data: string | Buffer): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify(value, null, 2), "utf8");
-  await fs.rename(tmp, file);
+  await fs.writeFile(tmp, data, typeof data === "string" ? "utf8" : undefined);
+  await renameWithRetry(tmp, file);
+}
+
+/** Write JSON atomically: temp file in the same dir, then rename. */
+export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  await writeFileAtomic(file, JSON.stringify(value, null, 2));
 }
 
 async function pickUniqueId(baseDir: string, desired: string): Promise<string> {

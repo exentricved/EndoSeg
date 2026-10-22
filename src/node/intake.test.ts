@@ -148,4 +148,23 @@ describe("runIntake (real ffmpeg integration)", () => {
     );
     expect(onDisk.framesExtracted).toBe(10);
   }, 30000);
+
+  it("re-running intake replaces frames instead of mixing in the previous set", async () => {
+    const src = path.join(base, "Clip.mp4");
+    const gen = await run(ffmpegPath, [
+      "-hide_banner", "-f", "lavfi",
+      "-i", "testsrc=duration=2:size=64x64:rate=30",
+      "-pix_fmt", "yuv420p", "-y", src,
+    ]);
+    expect(gen.code).toBe(0);
+    const opts = { baseDir: base, projectId: "case-y", sourcePath: src, ffmpegPath, ffprobePath, sampleEvery: 6, now: "x" };
+    await runIntake(opts);
+    const second = await runIntake(opts);
+    expect(second.framesExtracted).toBe(10);
+    const rawDir = path.join(base, "projects", "case-y", "01_frames", "raw");
+    const frames = (await fs.readdir(rawDir)).sort();
+    expect(frames).toHaveLength(10);
+    expect(frames[0]).toBe("Clip_f0000000.png");
+    expect(frames[9]).toBe("Clip_f0000054.png");
+  }, 30000);
 });

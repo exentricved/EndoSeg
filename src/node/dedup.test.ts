@@ -125,10 +125,10 @@ describe("runDedup (real ffmpeg integration)", () => {
     }
 
     // Contiguous sequence A, A, B, B so ffmpeg's image2 demuxer reads all four.
-    await fs.copyFile(a, path.join(rawDir, "frame_000001.png"));
-    await fs.copyFile(a, path.join(rawDir, "frame_000002.png"));
-    await fs.copyFile(b, path.join(rawDir, "frame_000003.png"));
-    await fs.copyFile(b, path.join(rawDir, "frame_000004.png"));
+    await fs.copyFile(a, path.join(rawDir, "Clip_f0000001.png"));
+    await fs.copyFile(a, path.join(rawDir, "Clip_f0000002.png"));
+    await fs.copyFile(b, path.join(rawDir, "Clip_f0000003.png"));
+    await fs.copyFile(b, path.join(rawDir, "Clip_f0000004.png"));
 
     const res = await runDedup({
       baseDir: base,
@@ -142,7 +142,7 @@ describe("runDedup (real ffmpeg integration)", () => {
 
     const keptDir = path.join(base, "projects", "case-d", "01_frames", "kept");
     const kept = (await fs.readdir(keptDir)).sort();
-    expect(kept).toEqual(["frame_000001.png", "frame_000003.png"]);
+    expect(kept).toEqual(["Clip_f0000001.png", "Clip_f0000003.png"]);
 
     const report = JSON.parse(
       await fs.readFile(path.join(base, "projects", "case-d", "01_frames", "dedup-report.json"), "utf8"),
@@ -159,6 +159,6 @@ describe("runDedup (real ffmpeg integration)", () => {
       now: "2026-06-13T10:05:00.000Z",
     });
     expect(again).toEqual({ total: 4, kept: 2, dropped: 2 });
-    expect((await fs.readdir(keptDir)).sort()).toEqual(["frame_000001.png", "frame_000003.png"]);
+    expect((await fs.readdir(keptDir)).sort()).toEqual(["Clip_f0000001.png", "Clip_f0000003.png"]);
   }, 30000);
 });

@@ -5,7 +5,7 @@
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { projectDir } from "./library.js";
+import { projectDir, renameWithRetry, writeFileAtomic } from "./library.js";
 import type { SegFrame, SegFramesResult, SegSaveResult, FrameReviewResult } from "../shared/ipc.js";
 
 const FRAME_RE = /\.(png|jpg|jpeg)$/i;
@@ -150,6 +150,10 @@ function decodePngDataUrl(dataUrl: unknown): Buffer | null {
  *  - annotations.leus  — the full snapshot (re-loadable on reopen)
  *  - masks/<frame>__class<labelId>.png — one PNG per painted class per frame
  * The masks/ folder is rebuilt from scratch each save so it mirrors current state.
+ *
+ * Crash/network-safe: the snapshot is written atomically (previous copy kept as
+ * annotations.leus.bak), and masks are built in a sibling temp folder that is
+ * only swapped in once complete — a failed save never leaves a half-written file.
  */
 export async function saveSegmentationSnapshot(
   baseDir: string,
@@ -157,17 +161,15 @@ export async function saveSegmentationSnapshot(
   snapshot: unknown,
 ): Promise<SegSaveResult> {
   const dir = segDir(baseDir, projectId);
-  const masksDir = path.join(dir, "masks");
+  const finalMasksDir = path.join(dir, "masks");
+  const masksDir = path.join(dir, `masks.tmp-${process.pid}`);
   await fs.mkdir(dir, { recursive: true });
-  // Rebuild masks/ so deleted classes/frames don't linger.
   await fs.rm(masksDir, { recursive: true, force: true });
   await fs.mkdir(masksDir, { recursive: true });
 
-  await fs.writeFile(
-    path.join(dir, ANNOTATIONS_FILE),
-    JSON.stringify(snapshot, null, 2),
-    "utf8",
-  );
+  const annFile = path.join(dir, ANNOTATIONS_FILE);
+  await fs.copyFile(annFile, `${annFile}.bak`).catch(() => { /* first save */ });
+  await writeFileAtomic(annFile, JSON.stringify(snapshot, null, 2));
 
   let frameCount = 0;
   let maskCount = 0;
@@ -187,5 +189,8 @@ export async function saveSegmentationSnapshot(
       }
     }
   }
+  // Swap the freshly built masks in (rebuilt each save so deleted classes/frames don't linger).
+  await fs.rm(finalMasksDir, { recursive: true, force: true });
+  await renameWithRetry(masksDir, finalMasksDir);
   return { frameCount, maskCount };
 }

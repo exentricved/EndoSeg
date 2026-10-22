@@ -9,7 +9,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { runBinary } from "./proc.js";
-import { projectDir } from "./library.js";
+import { projectDir, writeJsonAtomic } from "./library.js";
 
 // dHash works on a tiny grayscale thumbnail: (HASH_W = HASH_SIZE+1) x HASH_SIZE,
 // comparing each pixel to its right neighbour → HASH_SIZE*HASH_SIZE = 64 bits.
@@ -103,7 +103,17 @@ export function planDedup(frames: FrameHash[], threshold: number): DedupPlan {
 // ── ffmpeg + fs orchestrator ─────────────────────────────────────────────────
 
 function listFrames(files: string[]): string[] {
-  return files.filter((f) => /^frame_\d+\.png$/.test(f)).sort();
+  return files.filter((f) => /\.png$/i.test(f)).sort();
+}
+
+/**
+ * One ffconcat entry per frame, in order (names are arbitrary, e.g. <video>_f0000123.png).
+ * Entries are relative to the list file: ffmpeg's concat demuxer mangles UNC
+ * (\\server\share) paths, so absolute paths break on network drives.
+ */
+export function buildConcatList(files: string[]): string {
+  const quote = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
+  return ["ffconcat version 1.0", ...files.map((f) => `file ${quote(f)}`)].join("\n") + "\n";
 }
 
 /** Hash every raw frame via a single ffmpeg pass producing 9x8 gray thumbnails. */
@@ -115,24 +125,36 @@ export async function hashFrames(
   const files = listFrames(await fs.readdir(rawDir));
   if (files.length === 0) return [];
 
-  const pattern = path.join(rawDir, "frame_%06d.png");
-  const res = await runBinary(
-    ffmpegPath,
-    [
-      "-hide_banner",
-      "-start_number", "1",
-      "-i", pattern,
-      "-vf", `scale=${HASH_W}:${HASH_SIZE}:flags=area,format=gray`,
-      "-f", "rawvideo",
-      "-",
-    ],
-    {
-      onStderrLine: (line) => {
-        const m = line.match(/frame=\s*(\d+)/);
-        if (m && onProgress) onProgress(Number(m[1]));
+  // Feed frames through the concat demuxer so any filename scheme works.
+  // Run from inside rawDir with relative names so UNC library paths work.
+  const listName = `.hashlist-${process.pid}.txt`;
+  const listFile = path.join(rawDir, listName);
+  await fs.writeFile(listFile, buildConcatList(files), "utf8");
+  let res;
+  try {
+    res = await runBinary(
+      ffmpegPath,
+      [
+        "-hide_banner",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", listName,
+        "-vf", `scale=${HASH_W}:${HASH_SIZE}:flags=area,format=gray`,
+        "-fps_mode", "passthrough",
+        "-f", "rawvideo",
+        "-",
+      ],
+      {
+        cwd: rawDir,
+        onStderrLine: (line) => {
+          const m = line.match(/frame=\s*(\d+)/);
+          if (m && onProgress) onProgress(Number(m[1]));
+        },
       },
-    },
-  );
+    );
+  } finally {
+    await fs.rm(listFile, { force: true });
+  }
   if (res.code !== 0) throw new Error(`ffmpeg hashing failed (${res.code}): ${res.stderr.slice(-400)}`);
 
   const total = Math.floor(res.stdout.length / BYTES_PER_THUMB);
@@ -208,11 +230,7 @@ export async function runDedup(opts: RunDedupOptions): Promise<DedupResult> {
     dropped: plan.dropped.length,
     decisions: plan.decisions,
   };
-  await fs.writeFile(
-    path.join(dir, "01_frames", "dedup-report.json"),
-    JSON.stringify(report, null, 2),
-    "utf8",
-  );
+  await writeJsonAtomic(path.join(dir, "01_frames", "dedup-report.json"), report);
 
   return { total: hashes.length, kept: plan.kept.length, dropped: plan.dropped.length };
 }

@@ -9,7 +9,7 @@ import { promises as fs, createReadStream } from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { run } from "./proc.js";
-import { projectDir } from "./library.js";
+import { projectDir, writeJsonAtomic } from "./library.js";
 
 export interface VideoMeta {
   durationSec: number;
@@ -121,6 +121,9 @@ export async function extractFrames(
   videoBase: string,
   onProgress?: (p: ExtractProgress) => void,
 ): Promise<number> {
+  // Start clean: on a re-run, leftover frames from the previous intake would
+  // otherwise be mixed into the renumbering below.
+  await fs.rm(outDir, { recursive: true, force: true });
   await fs.mkdir(outDir, { recursive: true });
   const outPattern = path.join(outDir, "frame_%06d.png");
   const res = await run(ffmpegPath, buildExtractArgs(input, outPattern, sampleEvery), {
@@ -134,7 +137,7 @@ export async function extractFrames(
   // Rename frame_%06d.png → {videoBase}_f{originalVideoFrame:07d}.png so that
   // filenames encode temporal position in the source video without needing to
   // consult intake.json. originalFrame = extractedIndex * sampleEvery (0-based).
-  const extracted = (await fs.readdir(outDir)).filter((f) => f.endsWith(".png")).sort();
+  const extracted = (await fs.readdir(outDir)).filter((f) => /^frame_\d{6}\.png$/.test(f)).sort();
   for (let i = 0; i < extracted.length; i++) {
     const originalFrame = i * sampleEvery;
     const newName = `${videoBase}_f${String(originalFrame).padStart(7, "0")}.png`;
@@ -191,10 +194,6 @@ export async function runIntake(opts: RunIntakeOptions): Promise<IntakeRecord> {
     framesExtracted,
     meta,
   };
-  await fs.writeFile(
-    path.join(dir, "00_intake", "intake.json"),
-    JSON.stringify(record, null, 2),
-    "utf8",
-  );
+  await writeJsonAtomic(path.join(dir, "00_intake", "intake.json"), record);
   return record;
 }
