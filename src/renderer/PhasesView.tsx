@@ -336,6 +336,11 @@ export function PhasesView({
                 One clip per span goes to <code>{state.exportRoot}\{phaseFolderName(state.caseName ?? "case", "duodenum")}</code> and
                 the matching folders for the other phases. Every phase except fluoroscopy is also sampled into frames for segmentation.
               </span>
+              <span className="muted hint">
+                {state.crop
+                  ? `Cropped to ${state.crop.w}×${state.crop.h} of ${state.width}×${state.height} (change it with Crop… on the Intake stage).`
+                  : "Whole picture — no crop set (Crop… on the Intake stage)."}
+              </span>
               {hasSegmentation && (
                 <span className="warn">
                   ⚠ This project already has saved annotations. Exporting rebuilds the frame set, so annotations on frames

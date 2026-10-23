@@ -20,6 +20,8 @@ import {
   phaseFrameName,
   buildClipArgs,
   buildPhaseFrameArgs,
+  normalizeCrop,
+  type CropRect,
 } from "../core/phases.js";
 
 function phasesFile(baseDir: string, projectId: string): string {
@@ -54,8 +56,36 @@ export async function readIntakeRecord(baseDir: string, projectId: string): Prom
   }
 }
 
+/** Spatial crop applied to clips and frames on export (00_intake/crop.json); null = whole picture. */
+function cropFile(baseDir: string, projectId: string): string {
+  return path.join(projectDir(baseDir, projectId), "00_intake", "crop.json");
+}
+
+export async function loadCrop(baseDir: string, projectId: string, intake?: IntakeRecord | null): Promise<CropRect | null> {
+  const rec = intake ?? (await readIntakeRecord(baseDir, projectId));
+  if (!rec) return null;
+  try {
+    const raw: unknown = JSON.parse(await fs.readFile(cropFile(baseDir, projectId), "utf8"));
+    return normalizeCrop(raw, rec.meta.width, rec.meta.height);
+  } catch {
+    return null;
+  }
+}
+
+/** Save (or with null/whole-frame, clear) the crop; resolves to what was stored. */
+export async function saveCrop(baseDir: string, projectId: string, raw: unknown): Promise<CropRect | null> {
+  const rec = await readIntakeRecord(baseDir, projectId);
+  if (!rec) throw new Error("No video taken in yet");
+  const crop = normalizeCrop(raw, rec.meta.width, rec.meta.height);
+  if (crop) await writeJsonAtomic(cropFile(baseDir, projectId), crop);
+  else await fs.rm(cropFile(baseDir, projectId), { force: true });
+  return crop;
+}
+
 export interface FrameIndexEntry {
   phase: PhaseId;
+  /** Which span of that phase (1-based, time order) — matches the clip's _NN. */
+  span?: number;
   /** Seconds from the start of the source video. */
   timeSec: number;
 }
@@ -110,6 +140,7 @@ export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<Phase
   const source = path.join(dir, "00_intake", "source", intake.sourceFile);
   const caseName = caseNameFromSource(intake.sourcePath);
   const numbered = numberSpans(labels.spans);
+  const crop = await loadCrop(opts.baseDir, opts.projectId, intake);
   const fail = (what: string, res: { code: number; stderr: string }) =>
     new Error(`ffmpeg ${what} failed (${res.code}): ${res.stderr.slice(-400)}`);
 
@@ -127,7 +158,7 @@ export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<Phase
     const folderPath = path.join(opts.exportRoot, phaseFolderName(caseName, span.phase));
     await fs.mkdir(folderPath, { recursive: true });
     const out = path.join(folderPath, phaseClipName(caseName, span.phase, index));
-    const res = await run(opts.ffmpegPath, buildClipArgs(source, out, span.start, span.end));
+    const res = await run(opts.ffmpegPath, buildClipArgs(source, out, span.start, span.end, crop));
     if (res.code !== 0) throw fail("clip", res);
     clips++;
   }
@@ -140,27 +171,25 @@ export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<Phase
   const index: Record<string, FrameIndexEntry> = {};
   const frameSpans = numbered.filter(({ span }) => phaseById(span.phase)?.frames);
   for (let i = 0; i < frameSpans.length; i++) {
-    const { span } = frameSpans[i]!;
+    const { span, index: spanIndex } = frameSpans[i]!;
     opts.onProgress?.({ step: "frames", phase: span.phase, done: i, total: frameSpans.length });
     await fs.rm(tmpDir, { recursive: true, force: true });
     await fs.mkdir(tmpDir, { recursive: true });
     const res = await run(
       opts.ffmpegPath,
-      buildPhaseFrameArgs(source, path.join(tmpDir, "f_%06d.png"), span.start, span.end, opts.fps),
+      buildPhaseFrameArgs(source, path.join(tmpDir, "f_%06d.png"), span.start, span.end, opts.fps, crop),
     );
     if (res.code !== 0) throw fail("frame extraction", res);
     const files = (await fs.readdir(tmpDir)).filter((f) => /^f_\d{6}\.png$/.test(f)).sort();
     for (let k = 0; k < files.length; k++) {
       const timeSec = span.start + k / opts.fps;
-      const name = phaseFrameName(caseName, span.phase, timeSec);
-      // Overlapping spans of the same phase can land on the same name; first wins.
-      if (index[name]) continue;
+      const name = phaseFrameName(caseName, span.phase, spanIndex, timeSec);
       await fs.rename(path.join(tmpDir, files[k]!), path.join(rawDir, name));
-      index[name] = { phase: span.phase, timeSec: Math.round(timeSec * 1000) / 1000 };
+      index[name] = { phase: span.phase, span: spanIndex, timeSec: Math.round(timeSec * 1000) / 1000 };
     }
   }
   await fs.rm(tmpDir, { recursive: true, force: true });
-  await writeJsonAtomic(frameIndexFile(opts.baseDir, opts.projectId), { version: 1, fps: opts.fps, frames: index });
+  await writeJsonAtomic(frameIndexFile(opts.baseDir, opts.projectId), { version: 1, fps: opts.fps, crop, frames: index });
 
   return { caseName, exportRoot: opts.exportRoot, clips, frames: Object.keys(index).length };
 }

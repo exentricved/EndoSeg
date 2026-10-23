@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { runIntake } from "./intake.js";
 import { run } from "./proc.js";
-import { savePhaseLabels, loadPhaseLabels, loadFrameIndex, runPhaseExport } from "./phases.js";
+import { savePhaseLabels, loadPhaseLabels, loadFrameIndex, runPhaseExport, saveCrop, loadCrop } from "./phases.js";
 import { listSegFrames } from "./segmentation.js";
 
 const require = createRequire(import.meta.url);
@@ -72,17 +72,19 @@ describe("phase export (real ffmpeg integration)", () => {
 
     // 1 fps over 2 + 2 + 1 s of endoscopic phases; none from fluoroscopy.
     const raw = (await fs.readdir(path.join(base, "projects", "p", "01_frames", "raw"))).sort();
+    // The second attempt's frames carry _02, matching its clip.
     expect(raw).toEqual([
-      "CASE_01_t00000000_duodenum.png",
-      "CASE_01_t00001000_duodenum.png",
-      "CASE_01_t00002000_cannulation-attempt.png",
-      "CASE_01_t00003000_cannulation-attempt.png",
-      "CASE_01_t00005000_cannulation-attempt.png",
+      "CASE_01_t00000000_duodenum_01.png",
+      "CASE_01_t00001000_duodenum_01.png",
+      "CASE_01_t00002000_cannulation-attempt_01.png",
+      "CASE_01_t00003000_cannulation-attempt_01.png",
+      "CASE_01_t00005000_cannulation-attempt_02.png",
     ]);
     expect(r.frames).toBe(5);
-    expect((await loadFrameIndex(base, "p"))["CASE_01_t00003000_cannulation-attempt.png"]).toEqual({
+    expect((await loadFrameIndex(base, "p"))["CASE_01_t00005000_cannulation-attempt_02.png"]).toEqual({
       phase: "cannulation-attempt",
-      timeSec: 3,
+      span: 2,
+      timeSec: 5,
     });
     // The annotator sees each frame's phase.
     const seg = await listSegFrames(base, "p");
@@ -96,8 +98,20 @@ describe("phase export (real ffmpeg integration)", () => {
       version: 1,
       spans: [{ id: "b", phase: "cannulation-attempt", start: 2, end: 4 }],
     });
+    // ...and a crop applies to both clips and frames (odd values are rounded to even).
+    expect(await saveCrop(base, "p", { x: 9, y: 8, w: 41, h: 32 })).toEqual({ x: 8, y: 8, w: 40, h: 32 });
     const r2 = await runPhaseExport({ baseDir: base, projectId: "p", ffmpegPath, exportRoot: out, fps: 1 });
     expect(r2).toMatchObject({ clips: 1, frames: 2 });
+    const size = async (file: string) => {
+      const res = await run(ffprobePath, ["-v", "quiet", "-print_format", "json", "-show_streams", file]);
+      const s = JSON.parse(res.stdout).streams[0];
+      return `${s.width}x${s.height}`;
+    };
+    expect(await size(path.join(out, "CASE_01_cannulation-attempt", "CASE_01_cannulation-attempt_01.mp4"))).toBe("40x32");
+    expect(await size(path.join(base, "projects", "p", "01_frames", "raw", "CASE_01_t00002000_cannulation-attempt_01.png"))).toBe("40x32");
+    // Clearing the crop goes back to the whole picture.
+    expect(await saveCrop(base, "p", null)).toBeNull();
+    expect(await loadCrop(base, "p")).toBeNull();
     expect((await fs.readdir(path.join(out, "CASE_01_cannulation-attempt"))).sort()).toEqual([
       "CASE_01_cannulation-attempt_01.mp4",
       "notes.txt",

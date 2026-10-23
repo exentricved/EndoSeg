@@ -195,6 +195,26 @@ export async function updateStageOnDisk(
   return next;
 }
 
+/** Where deleted projects are moved: <library>/deleted/ (outside projects/, so not listed). */
+export function deletedRoot(baseDir: string): string {
+  return path.join(baseDir, "deleted");
+}
+
+/**
+ * Remove a project from the library by moving its folder to
+ * deleted/<id>__<timestamp> — recoverable by moving it back into projects/.
+ * Resolves to the new location, or null if there is no such project.
+ */
+export async function deleteProjectOnDisk(baseDir: string, id: string, now: string): Promise<string | null> {
+  if (!id || id !== path.basename(id) || id === "." || id === "..") return null;
+  const dir = projectDir(baseDir, id);
+  if (!(await exists(path.join(dir, "project.json")))) return null;
+  await fs.mkdir(deletedRoot(baseDir), { recursive: true });
+  const dest = path.join(deletedRoot(baseDir), `${id}__${now.replace(/[:.]/g, "-")}`);
+  await renameWithRetry(dir, dest);
+  return dest;
+}
+
 /** List every valid project, summarized and sorted for the hub. */
 export async function listProjects(baseDir: string): Promise<ProjectSummary[]> {
   const root = projectsRoot(baseDir);

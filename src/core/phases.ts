@@ -97,10 +97,14 @@ export function phaseClipName(caseName: string, phase: PhaseId, index: number): 
   return `${phaseFolderName(caseName, phase)}_${String(index).padStart(2, "0")}.mp4`;
 }
 
-/** Frame file named by its time in the source so a sorted listing is chronological. */
-export function phaseFrameName(caseName: string, phase: PhaseId, timeSec: number): string {
+/**
+ * <case>_t<ms>_<phase>_NN.png — named by time in the source (so a sorted
+ * listing is chronological) plus the span number, matching that span's clip.
+ */
+export function phaseFrameName(caseName: string, phase: PhaseId, index: number, timeSec: number): string {
   const ms = Math.max(0, Math.round(timeSec * 1000));
-  return `${safeFolderName(caseName).replace(/\s+/g, "_")}_t${String(ms).padStart(8, "0")}_${phase}.png`;
+  const nn = String(index).padStart(2, "0");
+  return `${safeFolderName(caseName).replace(/\s+/g, "_")}_t${String(ms).padStart(8, "0")}_${phase}_${nn}.png`;
 }
 
 /** Number each span within its phase (1-based, in time order). */
@@ -122,15 +126,61 @@ export function formatTimecode(sec: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${rest}` : `${m}:${rest}`;
 }
 
+// ── Crop ─────────────────────────────────────────────────────────────────────
+
+/** Region of the source picture to keep, in source pixels. */
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Smallest crop side accepted, in source pixels. */
+export const MIN_CROP = 32;
+
+const even = (n: number) => Math.floor(n / 2) * 2;
+
+/**
+ * Validate an untrusted crop against the source size: clamp it inside the
+ * frame and round to even numbers (H.264 4:2:0 needs even dimensions).
+ * Null when absent, too small, or covering the whole frame (= no crop).
+ */
+export function normalizeCrop(raw: unknown, width: number, height: number): CropRect | null {
+  if (typeof raw !== "object" || raw === null || width <= 0 || height <= 0) return null;
+  const r = raw as Record<string, unknown>;
+  const [x0, y0, w0, h0] = [r.x, r.y, r.w, r.h].map(Number) as [number, number, number, number];
+  if (![x0, y0, w0, h0].every(Number.isFinite)) return null;
+  const x = even(Math.min(Math.max(0, x0), width));
+  const y = even(Math.min(Math.max(0, y0), height));
+  const w = even(Math.min(w0, width - x));
+  const h = even(Math.min(h0, height - y));
+  if (w < MIN_CROP || h < MIN_CROP) return null;
+  if (x === 0 && y === 0 && w >= even(width) && h >= even(height)) return null;
+  return { x, y, w, h };
+}
+
+function cropFilter(c: CropRect | null | undefined): string[] {
+  return c ? [`crop=${c.w}:${c.h}:${c.x}:${c.y}`] : [];
+}
+
 // ── ffmpeg args ──────────────────────────────────────────────────────────────
 
 const t = (sec: number) => sec.toFixed(3);
 
-/** Frame-accurate re-encoded clip of [start, end). Audio is kept if present. */
-export function buildClipArgs(input: string, out: string, start: number, end: number): string[] {
+/** Frame-accurate re-encoded clip of [start, end), optionally cropped. Audio is kept if present. */
+export function buildClipArgs(
+  input: string,
+  out: string,
+  start: number,
+  end: number,
+  crop?: CropRect | null,
+): string[] {
+  const vf = cropFilter(crop);
   return [
     "-hide_banner", "-ss", t(start), "-i", input, "-t", t(end - start),
     "-map", "0:v:0", "-map", "0:a?",
+    ...(vf.length ? ["-vf", vf.join(",")] : []),
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-movflags", "+faststart", "-y", out,
   ];
@@ -148,10 +198,12 @@ export function buildPhaseFrameArgs(
   start: number,
   end: number,
   fps: number,
+  crop?: CropRect | null,
 ): string[] {
+  const vf = [`select=gte(t\\,selected_n/${fps})`, ...cropFilter(crop)].join(",");
   return [
     "-hide_banner", "-ss", t(start), "-i", input, "-t", t(end - start),
-    "-map", "0:v:0", "-vf", `select=gte(t\\,selected_n/${fps})`, "-fps_mode", "vfr",
+    "-map", "0:v:0", "-vf", vf, "-fps_mode", "vfr",
     "-start_number", "0", "-y", outPattern,
   ];
 }

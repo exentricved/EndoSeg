@@ -213,6 +213,20 @@ tr.attention { background: rgba(239, 68, 68, 0.08); }
 .phases-export { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .phases-export code { word-break: break-all; font-size: 11px; }
 .warn { color: var(--needs_review); font-size: 12px; }
+
+/* Crop picker */
+.crop-stage { flex: 1; min-height: 0; display: grid; place-items: center; }
+.crop-box { position: relative; background: #000; }
+.crop-box video { display: block; width: 100%; height: 100%; }
+.crop-overlay { position: absolute; inset: 0; cursor: crosshair; overflow: hidden; touch-action: none; }
+.crop-rect {
+  position: absolute; outline: 2px solid var(--accent);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); pointer-events: none;
+}
+
+/* Delete project */
+.danger { background: var(--error); color: #fff; }
+.delete-confirm { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .library-error {
   margin-bottom: 14px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
   border: 1px solid var(--error); color: var(--error);

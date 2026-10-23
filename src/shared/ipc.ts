@@ -3,7 +3,7 @@
 
 import type { ProjectSummary } from "../core/manifest.js";
 import type { ProjectManifest } from "../core/stages.js";
-import type { PhaseLabels } from "../core/phases.js";
+import type { CropRect, PhaseLabels } from "../core/phases.js";
 import type { PhaseExportProgress } from "../node/phases.js";
 import type { Settings } from "../node/settings.js";
 
@@ -40,6 +40,8 @@ export const IPC = {
   phasesExport: "phases:export",
   phasesProgress: "phases:progress",
   phasesReveal: "phases:reveal",
+  cropSave: "crop:save",
+  projectDelete: "project:delete",
 } as const;
 
 export interface IntakeProgress {
@@ -54,6 +56,11 @@ export interface PhasesState {
   videoUrl: string | null;
   durationSec: number;
   fps: number;
+  /** Source picture size (crop coordinates are in these pixels). */
+  width: number;
+  height: number;
+  /** Region kept on export; null = whole picture. */
+  crop: CropRect | null;
   /** Case name (folder the video came from) used for the export folders. */
   caseName: string | null;
   /** Where the <case>_<phase> folders will be written. */
@@ -142,6 +149,8 @@ export interface EndoSegApi {
   chooseExportDir(): Promise<Settings | null>;
   getProject(id: string): Promise<ProjectManifest | null>;
   revealProject(id: string): Promise<void>;
+  /** Move a project to <library>/deleted/ (recoverable); resolves to true if it was moved. */
+  deleteProject(id: string): Promise<boolean>;
   getSettings(): Promise<Settings>;
   /** Pick a folder for a folder-valued setting; resolves to the updated settings, or null if cancelled. */
   chooseSettingDir(key: "rawVideosDir" | "phaseExportDir"): Promise<Settings | null>;
@@ -170,6 +179,8 @@ export interface EndoSegApi {
   exportPhases(projectId: string): Promise<ProjectManifest | null>;
   onPhasesProgress(cb: (p: PhaseExportProgress) => void): () => void;
   revealPhases(projectId: string): Promise<void>;
+  /** Save the export crop (null clears it); resolves to the stored crop after clamping/rounding. */
+  saveCrop(projectId: string, crop: CropRect | null): Promise<CropRect | null>;
   checkForUpdates(): Promise<UpdateStatus>;
   onUpdateStatus(cb: (s: UpdateStatus) => void): () => void;
   listCrashes(): Promise<string[]>;

@@ -9,7 +9,7 @@ import type { IntakeProgress, ExportProgress } from "../shared/ipc.js";
 import { StageBadge, formatTime } from "./ui.js";
 
 const STAGE_HINT: Record<StageId, string> = {
-  intake: "Add the ERCP video — copied into the project and hashed (videos the player can't open, e.g. AVI, also get a preview copy).",
+  intake: "Add the ERCP video — copied into the project and hashed (videos the player can't open, e.g. AVI, also get a preview copy). Then optionally crop the picture; the crop applies to exported clips and frames.",
   phases: "Label the procedure phases on the video, then export one clip per phase span and 1 fps frames for segmentation.",
   segmentation: "Annotate the 1 fps frames in the annotator.",
   export: "Package annotated frames + multi-class label maps (pixel = class ID) + metadata.json into 03_export/.",
@@ -32,6 +32,7 @@ export function ProjectDetail({
   onBack,
   onOpenAnnotator,
   onOpenPhases,
+  onOpenCrop,
 }: {
   id: string;
   /** Start intake on this video as soon as the project opens (from "New project from video"). */
@@ -39,6 +40,7 @@ export function ProjectDetail({
   onBack: () => void;
   onOpenAnnotator: (id: string) => void;
   onOpenPhases: (id: string, manifest: ProjectManifest) => void;
+  onOpenCrop: (id: string) => void;
 }) {
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [missing, setMissing] = useState(false);
@@ -66,16 +68,20 @@ export function ProjectDetail({
     unsub.current = window.endoseg.onIntakeProgress((p) =>
       setStatusLine(INTAKE_LABEL[p.phase] + (p.percent != null ? ` ${p.percent}%` : "")),
     );
+    let ok = false;
     try {
       const updated = await window.endoseg.runIntake(id, sourcePath);
       if (updated) setManifest(updated);
+      ok = updated?.stages.intake.status === "done";
     } finally {
       unsub.current?.();
       unsub.current = null;
       setRunning(null);
       setStatusLine(null);
     }
-  }, [id]);
+    // Crop is part of taking a video in: go straight to it (it can be skipped).
+    if (ok) onOpenCrop(id);
+  }, [id, onOpenCrop]);
 
   // Run once per picked video (StrictMode re-runs effects; the ref keeps it single).
   const autoStarted = useRef(false);
@@ -152,9 +158,16 @@ export function ProjectDetail({
               </div>
               <div className="stage-action">
                 {stage === "intake" ? (
-                  <button onClick={() => void runIntake()} disabled={busy}>
-                    {running === "intake" ? "Working…" : st.status === "done" ? "Re-import…" : "Add video…"}
-                  </button>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "stretch" }}>
+                    <button onClick={() => void runIntake()} disabled={busy}>
+                      {running === "intake" ? "Working…" : st.status === "done" ? "Re-import…" : "Add video…"}
+                    </button>
+                    {st.status === "done" && (
+                      <button className="secondary" onClick={() => onOpenCrop(id)} disabled={busy}>
+                        Crop…
+                      </button>
+                    )}
+                  </div>
                 ) : stage === "phases" ? (
                   <button
                     onClick={() => onOpenPhases(id, manifest)}

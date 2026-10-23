@@ -21,10 +21,18 @@ import {
   updateStageOnDisk,
   checkLibrary,
   projectDir,
+  deleteProjectOnDisk,
   type LibraryCheck,
 } from "../src/node/library.js";
 import { runIntake } from "../src/node/intake.js";
-import { loadPhaseLabels, savePhaseLabels, readIntakeRecord, runPhaseExport } from "../src/node/phases.js";
+import {
+  loadPhaseLabels,
+  savePhaseLabels,
+  readIntakeRecord,
+  runPhaseExport,
+  loadCrop,
+  saveCrop,
+} from "../src/node/phases.js";
 import { caseNameFromSource } from "../src/core/phases.js";
 import {
   listSegFrames,
@@ -220,6 +228,11 @@ function registerIpc(): void {
     shell.showItemInFolder(path.join(libraryDir, "projects", id, "project.json"));
   });
 
+  ipcMain.handle(IPC.projectDelete, async (_e, id: unknown): Promise<boolean> => {
+    if (typeof id !== "string") return false;
+    return (await deleteProjectOnDisk(libraryDir, id, nowIso())) !== null;
+  });
+
   ipcMain.handle(IPC.settingsGet, (): Settings => settings);
 
   ipcMain.handle(IPC.settingChooseDir, async (_e, key: unknown): Promise<Settings | null> => {
@@ -295,6 +308,9 @@ function registerIpc(): void {
       videoUrl: intake?.playbackFile ? `endoseg-video://video/${encodeURIComponent(projectId)}` : null,
       durationSec: intake?.meta.durationSec ?? 0,
       fps: intake?.meta.fps ?? 0,
+      width: intake?.meta.width ?? 0,
+      height: intake?.meta.height ?? 0,
+      crop: await loadCrop(libraryDir, projectId, intake),
       caseName: intake ? caseNameFromSource(intake.sourcePath) : null,
       exportRoot: phaseExportRoot(),
     };
@@ -336,6 +352,17 @@ function registerIpc(): void {
       );
       return updateStageOnDisk(libraryDir, projectId, "phases", { status: "error", error: e.message }, nowIso());
     }
+  });
+
+  ipcMain.handle(IPC.cropSave, async (_e, projectId: unknown, crop: unknown) => {
+    if (typeof projectId !== "string") return null;
+    const saved = await saveCrop(libraryDir, projectId, crop);
+    // Clips/frames already exported used the old crop — flag the stage for re-export.
+    const m = await readManifest(libraryDir, projectId);
+    if (m?.stages.phases.status === "done") {
+      await updateStageOnDisk(libraryDir, projectId, "phases", { status: "in_progress" }, nowIso());
+    }
+    return saved;
   });
 
   ipcMain.handle(IPC.phasesReveal, async () => {

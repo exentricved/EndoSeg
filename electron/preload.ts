@@ -18,6 +18,7 @@ const api: EndoSegApi = {
   chooseExportDir: () => ipcRenderer.invoke(IPC.exportChooseDir),
   getProject: (id) => ipcRenderer.invoke(IPC.projectGet, id),
   revealProject: (id) => ipcRenderer.invoke(IPC.projectReveal, id),
+  deleteProject: (id) => ipcRenderer.invoke(IPC.projectDelete, id),
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
   chooseSettingDir: (key) => ipcRenderer.invoke(IPC.settingChooseDir, key),
   updateSettings: (patch) => ipcRenderer.invoke(IPC.settingsUpdate, patch),
@@ -48,6 +49,7 @@ const api: EndoSegApi = {
     return () => ipcRenderer.removeListener(IPC.phasesProgress, listener);
   },
   revealPhases: (projectId) => ipcRenderer.invoke(IPC.phasesReveal, projectId),
+  saveCrop: (projectId, crop) => ipcRenderer.invoke(IPC.cropSave, projectId, crop),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   onUpdateStatus: (cb) => {
     const listener = (_e: IpcRendererEvent, s: UpdateStatus) => cb(s);

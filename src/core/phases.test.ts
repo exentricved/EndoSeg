@@ -13,6 +13,7 @@ import {
   buildPhaseFrameArgs,
   isBrowserPlayable,
   safeFolderName,
+  normalizeCrop,
 } from "./phases.js";
 
 describe("PHASES", () => {
@@ -75,12 +76,12 @@ describe("naming", () => {
     expect(phaseClipName("CASE", "cannulation-attempt", 2)).toBe("CASE_cannulation-attempt_02.mp4");
   });
 
-  it("names frames so a sorted listing is chronological", () => {
-    const a = phaseFrameName("CASE", "post-cannulation", 9.5);
-    const b = phaseFrameName("CASE", "duodenum", 75);
-    expect(a).toBe("CASE_t00009500_post-cannulation.png");
+  it("names frames by time and span number, so a sorted listing is chronological", () => {
+    const a = phaseFrameName("CASE", "cannulation-attempt", 2, 9.5);
+    const b = phaseFrameName("CASE", "duodenum", 1, 75);
+    expect(a).toBe("CASE_t00009500_cannulation-attempt_02.png");
     expect([b, a].sort()).toEqual([a, b]);
-    expect(phaseFrameName("CASE A", "duodenum", 0)).toBe("CASE_A_t00000000_duodenum.png");
+    expect(phaseFrameName("CASE A", "duodenum", 1, 0)).toBe("CASE_A_t00000000_duodenum_01.png");
   });
 
   it("strips characters Windows can't put in a folder name", () => {
@@ -107,6 +108,21 @@ describe("naming", () => {
   });
 });
 
+describe("normalizeCrop", () => {
+  it("clamps into the frame and rounds to even numbers", () => {
+    expect(normalizeCrop({ x: 11, y: 5.6, w: 301, h: 2000 }, 1920, 1080)).toEqual({ x: 10, y: 4, w: 300, h: 1076 });
+    expect(normalizeCrop({ x: -50, y: 0, w: 640, h: 360 }, 1920, 1080)).toEqual({ x: 0, y: 0, w: 640, h: 360 });
+  });
+
+  it("is null for no crop, a tiny box, the whole frame or junk", () => {
+    expect(normalizeCrop(null, 1920, 1080)).toBeNull();
+    expect(normalizeCrop({ x: 0, y: 0, w: 10, h: 500 }, 1920, 1080)).toBeNull();
+    expect(normalizeCrop({ x: 0, y: 0, w: 1920, h: 1080 }, 1920, 1080)).toBeNull();
+    expect(normalizeCrop({ x: "a", y: 0, w: 100, h: 100 }, 1920, 1080)).toBeNull();
+    expect(normalizeCrop({ x: 0, y: 0, w: 100, h: 100 }, 0, 0)).toBeNull();
+  });
+});
+
 describe("ffmpeg args", () => {
   it("seeks before the input and limits duration for clips and frames", () => {
     const clip = buildClipArgs("in.avi", "out.mp4", 12.5, 20);
@@ -116,6 +132,15 @@ describe("ffmpeg args", () => {
     const frames = buildPhaseFrameArgs("in.avi", "f_%06d.png", 1, 4, 1);
     expect(frames).toContain("select=gte(t\\,selected_n/1)");
     expect(frames.at(-1)).toBe("f_%06d.png");
+  });
+
+  it("adds the crop to clips and after the frame selection", () => {
+    const c = { x: 10, y: 20, w: 300, h: 200 };
+    const clip = buildClipArgs("in", "out.mp4", 0, 1, c);
+    expect(clip[clip.indexOf("-vf") + 1]).toBe("crop=300:200:10:20");
+    expect(buildClipArgs("in", "out.mp4", 0, 1)).not.toContain("-vf");
+    const frames = buildPhaseFrameArgs("in", "f_%06d.png", 0, 1, 1, c);
+    expect(frames[frames.indexOf("-vf") + 1]).toBe("select=gte(t\\,selected_n/1),crop=300:200:10:20");
   });
 
   it("only plays H.264/VP9/AV1 in mp4-family containers directly", () => {

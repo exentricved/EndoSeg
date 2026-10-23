@@ -10,6 +10,7 @@ import { ProjectDetail } from "./ProjectDetail.js";
 import { StageBadge, formatTime } from "./ui.js";
 import { SegmentationView } from "./SegmentationView.js";
 import { PhasesView } from "./PhasesView.js";
+import { CropView } from "./CropView.js";
 
 type View =
   | { kind: "hub" }
@@ -18,6 +19,7 @@ type View =
   /** `intakePath`: a video picked from "New project" that intake should start on right away. */
   | { kind: "project"; id: string; intakePath?: string }
   | { kind: "phases"; id: string; manifest: ProjectManifest | null }
+  | { kind: "crop"; id: string }
   | { kind: "annotator"; id: string };
 
 export function App() {
@@ -48,6 +50,11 @@ export function App() {
   }, [refresh]);
 
   if (!info) return null;
+
+  if (view.kind === "crop") {
+    const projectId = view.id;
+    return <CropView projectId={projectId} onDone={() => { void refresh(); setView({ kind: "project", id: projectId }); }} />;
+  }
 
   if (view.kind === "phases") {
     const projectId = view.id;
@@ -163,6 +170,7 @@ export function App() {
           <ProjectTable
             projects={library?.projects ?? []}
             onOpen={(id) => setView({ kind: "project", id })}
+            onDeleted={() => void refresh()}
           />
         </main>
       )}
@@ -178,6 +186,7 @@ export function App() {
           }}
           onOpenAnnotator={(id) => setView({ kind: "annotator", id })}
           onOpenPhases={(id, manifest) => setView({ kind: "phases", id, manifest })}
+          onOpenCrop={(id) => setView({ kind: "crop", id })}
         />
       )}
 
@@ -193,7 +202,22 @@ export function App() {
 function ProjectTable(props: {
   projects: ProjectSummary[];
   onOpen: (id: string) => void;
+  onDeleted: () => void;
 }) {
+  // Two-step delete: the first click arms the row, the second moves the project to deleted/.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const remove = async (id: string) => {
+    setDeleting(true);
+    try {
+      await window.endoseg.deleteProject(id);
+      setConfirming(null);
+      props.onDeleted();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   if (props.projects.length === 0) {
     return (
       <div className="empty">
@@ -212,6 +236,7 @@ function ProjectTable(props: {
           <th>Pipeline</th>
           <th>Current stage</th>
           <th>Updated</th>
+          <th />
         </tr>
       </thead>
       <tbody>
@@ -232,6 +257,26 @@ function ProjectTable(props: {
               <StageBadge status={p.currentStatus} /> {STAGE_LABELS[p.currentStage]}
             </td>
             <td className="muted">{formatTime(p.updatedAt)}</td>
+            <td onClick={(e) => e.stopPropagation()}>
+              {confirming === p.id ? (
+                <div className="delete-confirm">
+                  <button className="danger" onClick={() => void remove(p.id)} disabled={deleting}>
+                    Delete
+                  </button>
+                  <button className="secondary" onClick={() => setConfirming(null)} disabled={deleting}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="secondary"
+                  title="Remove from the list (moved to the library's deleted folder; exported clips are kept)"
+                  onClick={() => setConfirming(p.id)}
+                >
+                  Delete…
+                </button>
+              )}
+            </td>
           </tr>
         ))}
       </tbody>

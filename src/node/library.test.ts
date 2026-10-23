@@ -10,6 +10,8 @@ import {
   checkLibrary,
   slugifyId,
   projectsRoot,
+  deleteProjectOnDisk,
+  deletedRoot,
 } from "./library.js";
 
 const T0 = "2026-06-13T10:00:00.000Z";
@@ -22,6 +24,25 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await fs.rm(base, { recursive: true, force: true });
+});
+
+describe("deleteProjectOnDisk", () => {
+  it("moves the project to deleted/ so it leaves the list but can be restored", async () => {
+    const { id } = await createProjectOnDisk(base, "Case D", T0);
+    const keep = await createProjectOnDisk(base, "Case K", T0);
+    const dest = await deleteProjectOnDisk(base, id, T1);
+    expect(dest).toBe(path.join(deletedRoot(base), `${id}__2026-06-13T11-00-00-000Z`));
+    expect((await fs.stat(path.join(dest!, "project.json"))).isFile()).toBe(true);
+    expect((await listProjects(base)).map((p) => p.id)).toEqual([keep.id]);
+  });
+
+  it("refuses unknown ids and path tricks", async () => {
+    await createProjectOnDisk(base, "Case X", T0);
+    expect(await deleteProjectOnDisk(base, "nope", T1)).toBeNull();
+    expect(await deleteProjectOnDisk(base, "..", T1)).toBeNull();
+    expect(await deleteProjectOnDisk(base, "../projects", T1)).toBeNull();
+    expect(await listProjects(base)).toHaveLength(1);
+  });
 });
 
 describe("slugifyId", () => {

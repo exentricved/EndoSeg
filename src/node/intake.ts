@@ -121,8 +121,10 @@ export async function runIntake(opts: RunIntakeOptions): Promise<IntakeRecord> {
   const dir = projectDir(opts.baseDir, opts.projectId);
   const intakeDir = path.join(dir, "00_intake");
   const sourceDir = path.join(intakeDir, "source");
-  // A re-import replaces the previous video rather than sitting beside it.
+  // A re-import replaces the previous video rather than sitting beside it,
+  // and drops its crop (the new video may differ in size or layout).
   await fs.rm(sourceDir, { recursive: true, force: true });
+  await fs.rm(path.join(intakeDir, "crop.json"), { force: true });
   await fs.mkdir(sourceDir, { recursive: true });
 
   const destName = safeBasename(opts.sourcePath);

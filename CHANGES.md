@@ -1,3 +1,17 @@
+# EndoSeg — v0.2.1 (2026-10-23)
+
+## Crop at intake
+- After a video is taken in, a **Crop** screen opens. Drag a rectangle over the part of the picture to keep (e.g. drop black borders, on-screen text or the fluoroscopy half of a split screen), use the slider to check other points in the video, then **Save crop** or **No crop**.
+- The crop applies to the exported phase **clips and segmentation frames**. The project's copy of the video stays whole, so the crop can be changed any time with **Crop…** on the Intake card. Changing it marks Phases *In Progress* until you re-export.
+- Stored in source pixels in `00_intake/crop.json`, rounded to even numbers (needed for H.264). Re-importing a video clears it.
+
+## Span numbers in frame names
+- Frames now carry the number of the span they came from, matching that span's clip: `<case>_t<ms>_<phase>_NN.png` (e.g. the second cannulation attempt → `…_cannulation-attempt_02.png`). `01_frames/frames.json` records it as `span`.
+- Projects already exported under v0.2.0 get the new names on their next phase export (annotations saved on the old names won't carry over).
+
+## Delete projects
+- **Delete…** on each row of the Projects list (click **Delete** again to confirm). The project folder moves to `<library>\deleted\<id>__<time>`, so it can be restored by moving it back into `projects\`. Exported phase clips in Annotated Videos are not touched.
+
 # EndoSeg — v0.2.0 (2026-10-23)
 
 ## New stage: Phases (Intake → **Phases** → Segmentation → Export)
