@@ -6,6 +6,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { projectDir, renameWithRetry, writeFileAtomic } from "./library.js";
+import { loadFrameIndex } from "./phases.js";
 import type { SegFrame, SegFramesResult, SegSaveResult } from "../shared/ipc.js";
 
 const FRAME_RE = /\.(png|jpg|jpeg)$/i;
@@ -72,6 +73,7 @@ export async function listSegFrames(
   baseDir: string,
   projectId: string,
 ): Promise<SegFramesResult> {
+  const index = await loadFrameIndex(baseDir, projectId);
   for (const source of ["raw", "kept"] as const) {
     const dir = framesDir(baseDir, projectId, source);
     const files = await listImageFiles(dir);
@@ -85,6 +87,7 @@ export async function listSegFrames(
             url: `endoseg-frame://frame/${encodeURIComponent(projectId)}/${source}/${encodeURIComponent(name)}`,
             width,
             height,
+            ...(index[name] ? { phase: index[name].phase } : {}),
           };
         }),
       );

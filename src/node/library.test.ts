@@ -7,7 +7,6 @@ import {
   listProjects,
   readManifest,
   updateStageOnDisk,
-  updateWorkOnDisk,
   checkLibrary,
   slugifyId,
   projectsRoot,
@@ -78,7 +77,7 @@ describe("updateStageOnDisk + listProjects", () => {
 
     const list = await listProjects(base);
     expect(list).toHaveLength(1);
-    expect(list[0].currentStage).toBe("segmentation");
+    expect(list[0].currentStage).toBe("phases");
   });
 
   it("ignores non-project junk in the projects dir", async () => {
@@ -104,26 +103,6 @@ describe("updateStageOnDisk + listProjects", () => {
     const dir = path.join(projectsRoot(base), id);
     const files = await fs.readdir(dir);
     expect(files.some((f) => f.includes(".tmp"))).toBe(false);
-  });
-});
-
-describe("updateWorkOnDisk", () => {
-  it("records intake, then status changes, keeping earlier fields", async () => {
-    const { id } = await createProjectOnDisk(base, "Case W", T0);
-    expect((await readManifest(base, id))?.work).toBeUndefined();
-    await updateWorkOnDisk(base, id, { status: "ongoing", intakeBy: "jdoe1", sourceFile: "a.mp4", sourcePath: "\\nas\v\a.mp4" }, T0);
-    await updateWorkOnDisk(base, id, { status: "complete", statusBy: "asmith2", statusAt: T1 }, T1);
-    const m = await readManifest(base, id);
-    expect(m?.work).toEqual({
-      status: "complete",
-      intakeBy: "jdoe1",
-      sourceFile: "a.mp4",
-      sourcePath: "\\nas\v\a.mp4",
-      statusBy: "asmith2",
-      statusAt: T1,
-    });
-    expect(m?.updatedAt).toBe(T1);
-    expect((await listProjects(base))[0].work?.status).toBe("complete");
   });
 });
 

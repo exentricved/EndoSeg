@@ -2,9 +2,12 @@
 // Channel names live here so both sides cannot drift.
 
 import type { ProjectSummary } from "../core/manifest.js";
-import type { ProjectManifest, WorkStatus } from "../core/stages.js";
-import type { ActivityEvent } from "../node/activity.js";
+import type { ProjectManifest } from "../core/stages.js";
+import type { PhaseLabels } from "../core/phases.js";
+import type { PhaseExportProgress } from "../node/phases.js";
 import type { Settings } from "../node/settings.js";
+
+export type { PhaseExportProgress };
 
 export const IPC = {
   appInfo: "app:info",
@@ -12,6 +15,7 @@ export const IPC = {
   libraryCreate: "library:create",
   libraryChooseDir: "library:chooseDir",
   exportChooseDir: "export:chooseDir",
+  settingChooseDir: "settings:chooseDir",
   projectGet: "project:get",
   projectReveal: "project:reveal",
   settingsGet: "settings:get",
@@ -30,16 +34,30 @@ export const IPC = {
   crashList: "crash:list",
   crashRead: "crash:read",
   crashOpenFolder: "crash:openFolder",
-  projectSetStatus: "project:setStatus",
   framesRemove: "frames:remove",
-  activityList: "activity:list",
-  activityOpenFolder: "activity:openFolder",
-  sessionStart: "session:start",
+  phasesLoad: "phases:load",
+  phasesSave: "phases:save",
+  phasesExport: "phases:export",
+  phasesProgress: "phases:progress",
+  phasesReveal: "phases:reveal",
 } as const;
 
 export interface IntakeProgress {
-  phase: "copy" | "probe" | "extract";
-  frames?: number;
+  phase: "copy" | "probe" | "preview";
+  percent?: number;
+}
+
+/** Everything the phase-labelling view needs for one project. */
+export interface PhasesState {
+  labels: PhaseLabels;
+  /** endoseg-video://video/<projectId> — null until a video has been taken in. */
+  videoUrl: string | null;
+  durationSec: number;
+  fps: number;
+  /** Case name (folder the video came from) used for the export folders. */
+  caseName: string | null;
+  /** Where the <case>_<phase> folders will be written. */
+  exportRoot: string;
 }
 
 /** One frame the annotator can load, addressed by the endoseg-frame:// protocol. */
@@ -51,6 +69,8 @@ export interface SegFrame {
   /** Pixel dimensions, parsed from the PNG header so the renderer needn't decode upfront. */
   width: number;
   height: number;
+  /** Phase the frame was extracted from (absent for frames from older projects). */
+  phase?: string;
 }
 
 export interface SegFramesResult {
@@ -98,8 +118,6 @@ export interface AppInfo {
   platform: string;
   electron: string;
   libraryDir: string;
-  /** Name entered at start-up ("" until someone signs in) — recorded on intake, export and status changes. */
-  user: string;
 }
 
 export interface LibraryState {
@@ -125,10 +143,13 @@ export interface EndoSegApi {
   getProject(id: string): Promise<ProjectManifest | null>;
   revealProject(id: string): Promise<void>;
   getSettings(): Promise<Settings>;
+  /** Pick a folder for a folder-valued setting; resolves to the updated settings, or null if cancelled. */
+  chooseSettingDir(key: "rawVideosDir" | "phaseExportDir"): Promise<Settings | null>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
-  pickVideo(): Promise<string | null>;
   runIntake(projectId: string, sourcePath: string): Promise<ProjectManifest | null>;
   onIntakeProgress(cb: (p: IntakeProgress) => void): () => void;
+  /** Pick a video (opens in the raw-videos folder); resolves to its path, or null if cancelled. */
+  pickVideo(): Promise<string | null>;
   /** List the frames to annotate (01_frames/raw; legacy projects fall back to kept). */
   listSegFrames(projectId: string): Promise<SegFramesResult>;
   /** Load a previously saved annotation snapshot (02_segmentation/annotations.leus), or null. */
@@ -140,15 +161,15 @@ export interface EndoSegApi {
   onExportProgress(cb: (p: ExportProgress) => void): () => void;
   /** Open the project's 03_export folder in the system file manager. */
   revealExport(projectId: string): Promise<void>;
-  /** Mark a project ongoing/complete (recorded with the current user). */
-  setProjectStatus(projectId: string, status: WorkStatus): Promise<ProjectManifest | null>;
   /** Move frames out of the project into 01_frames/removed/; resolves to the names moved. */
   removeFrames(projectId: string, frameIds: string[]): Promise<string[]>;
-  /** Library-wide activity (all users), newest first. */
-  listActivity(): Promise<ActivityEvent[]>;
-  openActivityFolder(): Promise<void>;
-  /** Sign in with the person's name for this session; resolves to the updated app info. */
-  startSession(name: string): Promise<AppInfo>;
+  loadPhases(projectId: string): Promise<PhasesState>;
+  /** Persist phase labels (00_intake/phases.json); resolves to the normalized labels. */
+  savePhases(projectId: string, labels: PhaseLabels): Promise<PhaseLabels>;
+  /** Write one clip per span to <exportRoot>/<case>_<phase>/ and extract 1 fps frames for segmentation. */
+  exportPhases(projectId: string): Promise<ProjectManifest | null>;
+  onPhasesProgress(cb: (p: PhaseExportProgress) => void): () => void;
+  revealPhases(projectId: string): Promise<void>;
   checkForUpdates(): Promise<UpdateStatus>;
   onUpdateStatus(cb: (s: UpdateStatus) => void): () => void;
   listCrashes(): Promise<string[]>;

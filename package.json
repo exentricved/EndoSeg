@@ -1,8 +1,8 @@
 {
   "name": "endoseg",
   "productName": "EndoSeg",
-  "version": "0.1.2",
-  "description": "Offline desktop app for sphincterotomy/ERCP video: intake, dedup, segmentation, export.",
+  "version": "0.2.0",
+  "description": "Offline desktop app for sphincterotomy/ERCP video: intake, phase labelling, segmentation, export.",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {

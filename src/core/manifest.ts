@@ -6,8 +6,6 @@ import {
   type StageId,
   type StageState,
   type StageStatus,
-  type WorkInfo,
-  type WorkStatus,
   STAGES,
   currentStage,
   needsAttention,
@@ -48,19 +46,6 @@ function parseStage(raw: unknown): ParseResult<StageState> {
   return { ok: true, value: out };
 }
 
-const WORK_STATUSES: WorkStatus[] = ["ongoing", "complete"];
-const WORK_STRING_FIELDS = ["intakeBy", "intakeAt", "sourceFile", "sourcePath", "statusBy", "statusAt"] as const;
-
-/** Optional work record; anything malformed is dropped rather than failing the manifest. */
-function parseWork(raw: unknown): WorkInfo | undefined {
-  if (!isObject(raw) || !WORK_STATUSES.includes(raw.status as WorkStatus)) return undefined;
-  const out: WorkInfo = { status: raw.status as WorkStatus };
-  for (const k of WORK_STRING_FIELDS) {
-    if (typeof raw[k] === "string") out[k] = raw[k] as string;
-  }
-  return out;
-}
-
 /** Validate an untrusted parsed `project.json` into a ProjectManifest. */
 export function parseManifest(raw: unknown): ParseResult<ProjectManifest> {
   if (!isObject(raw)) return { ok: false, error: "manifest is not an object" };
@@ -79,7 +64,13 @@ export function parseManifest(raw: unknown): ParseResult<ProjectManifest> {
 
   const stages = {} as Record<StageId, StageState>;
   for (const s of STAGES) {
-    const parsed = parseStage((raw.stages as Record<string, unknown>)[s]);
+    const rawStage = (raw.stages as Record<string, unknown>)[s];
+    // Stages added after a project was created (e.g. phases) start out pending.
+    if (rawStage === undefined && s === "phases") {
+      stages[s] = { status: "pending" };
+      continue;
+    }
+    const parsed = parseStage(rawStage);
     if (!parsed.ok) return { ok: false, error: `stage "${s}": ${parsed.error}` };
     stages[s] = parsed.value;
   }
@@ -93,8 +84,6 @@ export function parseManifest(raw: unknown): ParseResult<ProjectManifest> {
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt,
     stages,
   };
-  const work = parseWork(raw.work);
-  if (work) value.work = work;
   return { ok: true, value };
 }
 
@@ -110,8 +99,6 @@ export interface ProjectSummary {
   updatedAt: string;
   /** Per-stage status, in pipeline order, for the stage indicator. */
   stageStatuses: { stage: StageId; status: StageStatus }[];
-  /** Intake/ownership record, if a video has been taken in. */
-  work?: WorkInfo;
 }
 
 export function summarize(manifest: ProjectManifest): ProjectSummary {
@@ -128,7 +115,6 @@ export function summarize(manifest: ProjectManifest): ProjectSummary {
       stage,
       status: manifest.stages[stage].status,
     })),
-    ...(manifest.work ? { work: manifest.work } : {}),
   };
 }
 

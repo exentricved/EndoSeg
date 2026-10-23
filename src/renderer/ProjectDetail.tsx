@@ -9,15 +9,16 @@ import type { IntakeProgress, ExportProgress } from "../shared/ipc.js";
 import { StageBadge, formatTime } from "./ui.js";
 
 const STAGE_HINT: Record<StageId, string> = {
-  intake: "Upload a sphincterotomy video — copied into the project, hashed, and frames sampled.",
-  segmentation: "Run ML segmentation, then review/correct masks in the annotator.",
+  intake: "Add the ERCP video — copied into the project and hashed (videos the player can't open, e.g. AVI, also get a preview copy).",
+  phases: "Label the procedure phases on the video, then export one clip per phase span and 1 fps frames for segmentation.",
+  segmentation: "Annotate the 1 fps frames in the annotator.",
   export: "Package annotated frames + multi-class label maps (pixel = class ID) + metadata.json into 03_export/.",
 };
 
 const INTAKE_LABEL: Record<IntakeProgress["phase"], string> = {
   copy: "Copying & hashing video…",
   probe: "Reading video metadata…",
-  extract: "Extracting frames…",
+  preview: "Making a preview copy for the player…",
 };
 
 const EXPORT_LABEL: Record<ExportProgress["phase"], string> = {
@@ -27,12 +28,17 @@ const EXPORT_LABEL: Record<ExportProgress["phase"], string> = {
 
 export function ProjectDetail({
   id,
+  intakePath,
   onBack,
   onOpenAnnotator,
+  onOpenPhases,
 }: {
   id: string;
+  /** Start intake on this video as soon as the project opens (from "New project from video"). */
+  intakePath?: string;
   onBack: () => void;
   onOpenAnnotator: (id: string) => void;
+  onOpenPhases: (id: string, manifest: ProjectManifest) => void;
 }) {
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [missing, setMissing] = useState(false);
@@ -52,13 +58,13 @@ export function ProjectDetail({
 
   useEffect(() => () => unsub.current?.(), []);
 
-  const runIntake = useCallback(async () => {
-    const sourcePath = await window.endoseg.pickVideo();
+  const runIntake = useCallback(async (picked?: string) => {
+    const sourcePath = picked ?? (await window.endoseg.pickVideo());
     if (!sourcePath) return;
     setRunning("intake");
     setStatusLine(INTAKE_LABEL.copy);
     unsub.current = window.endoseg.onIntakeProgress((p) =>
-      setStatusLine(INTAKE_LABEL[p.phase] + (p.frames != null ? ` (${p.frames} frames)` : "")),
+      setStatusLine(INTAKE_LABEL[p.phase] + (p.percent != null ? ` ${p.percent}%` : "")),
     );
     try {
       const updated = await window.endoseg.runIntake(id, sourcePath);
@@ -70,6 +76,14 @@ export function ProjectDetail({
       setStatusLine(null);
     }
   }, [id]);
+
+  // Run once per picked video (StrictMode re-runs effects; the ref keeps it single).
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!intakePath || autoStarted.current) return;
+    autoStarted.current = true;
+    void runIntake(intakePath);
+  }, [intakePath, runIntake]);
 
   const runExportStage = useCallback(async () => {
     setRunning("export");
@@ -99,12 +113,6 @@ export function ProjectDetail({
   if (!manifest) return <main className="detail"><p className="muted">Loading…</p></main>;
 
   const busy = running !== null;
-  const work = manifest.work;
-
-  const setStatus = async (status: "ongoing" | "complete") => {
-    const updated = await window.endoseg.setProjectStatus(id, status);
-    if (updated) setManifest(updated);
-  };
 
   return (
     <main className="detail">
@@ -118,29 +126,6 @@ export function ProjectDetail({
           Open folder
         </button>
       </div>
-
-      {work && (
-        <div className="work-card">
-          <div>
-            <span className={`work-status work-${work.status}`}>{work.status}</span>
-            {work.statusBy && work.statusAt && (
-              <span className="muted"> · set by {work.statusBy}, {formatTime(work.statusAt)}</span>
-            )}
-          </div>
-          <div className="muted">
-            Video <strong title={work.sourcePath} style={{ color: "var(--text)" }}>{work.sourceFile ?? "—"}</strong>
-            {work.intakeBy && <> · taken in by {work.intakeBy}</>}
-            {work.intakeAt && <>, {formatTime(work.intakeAt)}</>}
-          </div>
-          <div>
-            {work.status === "ongoing" ? (
-              <button onClick={() => void setStatus("complete")} disabled={busy}>Mark complete</button>
-            ) : (
-              <button className="secondary" onClick={() => void setStatus("ongoing")} disabled={busy}>Reopen</button>
-            )}
-          </div>
-        </div>
-      )}
 
       <div className="stage-list">
         {STAGES.map((stage, i) => {
@@ -170,11 +155,19 @@ export function ProjectDetail({
                   <button onClick={() => void runIntake()} disabled={busy}>
                     {running === "intake" ? "Working…" : st.status === "done" ? "Re-import…" : "Add video…"}
                   </button>
+                ) : stage === "phases" ? (
+                  <button
+                    onClick={() => onOpenPhases(id, manifest)}
+                    disabled={busy || manifest.stages.intake.status !== "done"}
+                    title={manifest.stages.intake.status === "done" ? "" : "Add the video first"}
+                  >
+                    Label phases
+                  </button>
                 ) : stage === "segmentation" ? (
                   <button
                     onClick={() => onOpenAnnotator(id)}
                     disabled={busy}
-                    title="Open the annotator (Phase 1: load frames manually; auto-load from intake comes next)"
+                    title="Annotate the frames extracted on the Phases stage"
                   >
                     Open annotator
                   </button>

@@ -3,6 +3,7 @@
 
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { SegFrame } from "../shared/ipc.js";
+import { PHASES, phaseById } from "../core/phases.js";
 import {
   type Gray,
   type Similarity,
@@ -34,8 +35,8 @@ const DW_SAT_MIN  = 0.12;
 const DW_LIG_MIN  = 0.15;
 const DW_LIG_MAX  = 0.88;
 
-const PHASES = ["pre-cannulation", "cannulation", "sphincterotomy", "exiting"] as const;
-type ProcedurePhase = typeof PHASES[number] | "";
+/** A phase id from core/phases, an older free-form phase from a saved snapshot, or "". */
+type ProcedurePhase = string;
 type ClassDef = typeof CLASSES[number];
 
 // ---- Types ----
@@ -262,7 +263,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
     if (!frame) return;
     if (phase) phasesRef.current.set(frame.frameId, phase);
     else phasesRef.current.delete(frame.frameId);
-    setCurrentPhase(phase as ProcedurePhase);
+    setCurrentPhase(phase);
   }, []);
 
   // ---- drawScene — stable ----
@@ -506,6 +507,8 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       .then(([framesRes, snapshot]) => {
         if (cancelled) return;
         setFrames_(framesRes.frames);
+        // Frames carry the phase they were extracted from; a phase saved in the snapshot overrides it.
+        for (const f of framesRes.frames) if (f.phase) phasesRef.current.set(f.frameId, f.phase);
         if (snapshot && typeof snapshot === "object") {
           const s = snapshot as NativeSnapshot;
           if (s.version === 1 && Array.isArray(s.splitScreen)) {
@@ -538,10 +541,10 @@ export function SegmentationView({ projectId }: { projectId: string }) {
                 }
               }
             }
-            const firstId = framesRes.frames[0]?.frameId;
-            if (firstId) setCurrentPhase((phasesRef.current.get(firstId) ?? "") as ProcedurePhase);
           }
         }
+        const firstId = framesRes.frames[0]?.frameId;
+        if (firstId) setCurrentPhase(phasesRef.current.get(firstId) ?? "");
         setLoading(false);
       })
       .catch((e: unknown) => { if (!cancelled) setError(String(e)); });
@@ -592,7 +595,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
     inProgressRef.current = []; setInProgressLen(0);
     selectedPolyIdRef.current = null; setHasSelection(false);
     const newFrame = framesRef.current[n];
-    setCurrentPhase((newFrame ? (phasesRef.current.get(newFrame.frameId) ?? "") : "") as ProcedurePhase);
+    setCurrentPhase((newFrame ? (phasesRef.current.get(newFrame.frameId) ?? "") : ""));
   }, []);
 
   // ---- Finish polygon ----
@@ -1395,7 +1398,8 @@ export function SegmentationView({ projectId }: { projectId: string }) {
             <div style={{ fontSize: 10, color: "#475569", marginBottom: 2 }}>Phase</div>
             <select value={currentPhase} onChange={(e) => setPhase_(e.target.value)} style={{ fontSize: 11, padding: "3px 6px", background: "#0d1a2a", color: currentPhase ? "#e4e9f0" : "#475569", border: "1px solid #1e2d40", borderRadius: 4, cursor: "pointer", width: "100%" }}>
               <option value="">— phase —</option>
-              {PHASES.map((p) => <option key={p} value={p}>{p}</option>)}
+              {PHASES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+              {currentPhase && !phaseById(currentPhase) && <option value={currentPhase}>{currentPhase}</option>}
             </select>
 
             <PanelDivider />
@@ -1592,11 +1596,5 @@ function ToolBtn({ active, onClick, icon, label, title, danger }: { active: bool
 }
 
 function phaseColor(phase: string): string {
-  switch (phase) {
-    case "pre-cannulation": return "#64748b";
-    case "cannulation":     return "#3b82f6";
-    case "sphincterotomy":  return "#f97316";
-    case "exiting":         return "#22c55e";
-    default:                return "#475569";
-  }
+  return phaseById(phase)?.color ?? "#475569";
 }

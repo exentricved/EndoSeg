@@ -47,18 +47,16 @@ describe("parseManifest", () => {
     p.stages.dedup = { status: "done", counts: { kept: 3 } };
     const r = parseManifest(p);
     expect(r.ok).toBe(true);
-    if (r.ok) expect(Object.keys(r.value.stages)).toEqual(["intake", "segmentation", "export"]);
+    if (r.ok) expect(Object.keys(r.value.stages)).toEqual(["intake", "phases", "segmentation", "export"]);
   });
 
-  it("keeps a valid work record and drops a malformed one", () => {
+  it("reads projects created before the phases stage as phases-pending", () => {
     const p = createProject("c", "C", T0) as any;
-    p.work = { status: "ongoing", intakeBy: "jdoe1", sourceFile: "case 12.mp4", bogus: 1, statusAt: 5 };
+    delete p.stages.phases;
+    p.stages.intake = { status: "done" };
     const r = parseManifest(p);
-    expect(r.ok && r.value.work).toEqual({ status: "ongoing", intakeBy: "jdoe1", sourceFile: "case 12.mp4" });
-    p.work = { status: "finished" };
-    const r2 = parseManifest(p);
-    expect(r2.ok).toBe(true);
-    if (r2.ok) expect(r2.value.work).toBeUndefined();
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.stages.phases).toEqual({ status: "pending" });
   });
 
   it("rejects non-object input", () => {
@@ -72,14 +70,15 @@ describe("summarize", () => {
   it("reports current stage, status and completion", () => {
     let p = createProject("c", "Case C", T0);
     p = setStage(p, "intake", { status: "done" }, T1);
-    p = setStage(p, "segmentation", { status: "in_progress" }, T1);
+    p = setStage(p, "phases", { status: "in_progress" }, T1);
     const s = summarize(p);
-    expect(s.currentStage).toBe("segmentation");
+    expect(s.currentStage).toBe("phases");
     expect(s.currentStatus).toBe("in_progress");
-    expect(s.completion).toBeCloseTo(1 / 3);
+    expect(s.completion).toBeCloseTo(1 / 4);
     expect(s.stageStatuses.map((x) => x.status)).toEqual([
       "done",
       "in_progress",
+      "pending",
       "pending",
     ]);
   });

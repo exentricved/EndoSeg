@@ -1,5 +1,6 @@
 // Intake: copy a source video into a project, hash it, read its metadata, and
-// extract a sampled set of frames. Uses bundled ffmpeg/ffprobe (no Python).
+// make a browser-playable preview when needed for phase labelling. Frames are
+// extracted later, per phase (see phases.ts). Uses bundled ffmpeg/ffprobe.
 //
 // Pure helpers (parsing, arg building, sanitizing) are separated from the
 // spawn-based orchestrators so the former can be unit-tested cheaply and the
@@ -10,6 +11,7 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { run } from "./proc.js";
 import { projectDir, writeJsonAtomic } from "./library.js";
+import { buildPreviewArgs, isBrowserPlayable } from "../core/phases.js";
 
 export interface VideoMeta {
   durationSec: number;
@@ -25,12 +27,10 @@ export interface IntakeRecord {
   sourceFile: string;
   /** Full original path of the video that was taken in. */
   sourcePath: string;
-  /** OS account that ran intake. */
-  importedBy?: string;
   importedAt: string;
   sha256: string;
-  frameSampleEvery: number;
-  framesExtracted: number;
+  /** File the labelling player streams, relative to 00_intake/ (the source copy or preview.mp4). */
+  playbackFile: string;
   meta: VideoMeta;
 }
 
@@ -72,19 +72,6 @@ export function safeBasename(name: string): string {
   return base.replace(/^[._]+/, "") || "video";
 }
 
-/** ffmpeg args to keep 1 of every `sampleEvery` frames as a PNG sequence. */
-export function buildExtractArgs(
-  input: string,
-  outPattern: string,
-  sampleEvery: number,
-): string[] {
-  const n = Math.max(1, Math.floor(sampleEvery));
-  // The comma inside mod() must be escaped so ffmpeg does not read it as a
-  // filtergraph separator.
-  const filter = `select=not(mod(n\\,${n}))`;
-  return ["-hide_banner", "-i", input, "-vf", filter, "-vsync", "vfr", "-y", outPattern];
-}
-
 export function buildProbeArgs(input: string): string[] {
   return ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", input];
 }
@@ -113,41 +100,10 @@ export async function probeVideo(ffprobePath: string, input: string): Promise<Vi
   return parseFfprobe(json);
 }
 
-export interface ExtractProgress {
-  frames: number;
-}
-
-export async function extractFrames(
-  ffmpegPath: string,
-  input: string,
-  outDir: string,
-  sampleEvery: number,
-  videoBase: string,
-  onProgress?: (p: ExtractProgress) => void,
-): Promise<number> {
-  // Start clean: on a re-run, leftover frames from the previous intake would
-  // otherwise be mixed into the renumbering below.
-  await fs.rm(outDir, { recursive: true, force: true });
-  await fs.mkdir(outDir, { recursive: true });
-  const outPattern = path.join(outDir, "frame_%06d.png");
-  const res = await run(ffmpegPath, buildExtractArgs(input, outPattern, sampleEvery), {
-    onStderrLine: (line) => {
-      const m = line.match(/frame=\s*(\d+)/);
-      if (m && onProgress) onProgress({ frames: Number(m[1]) });
-    },
-  });
-  if (res.code !== 0) throw new Error(`ffmpeg failed (${res.code}): ${res.stderr.slice(-400)}`);
-
-  // Rename frame_%06d.png → {videoBase}_f{originalVideoFrame:07d}.png so that
-  // filenames encode temporal position in the source video without needing to
-  // consult intake.json. originalFrame = extractedIndex * sampleEvery (0-based).
-  const extracted = (await fs.readdir(outDir)).filter((f) => /^frame_\d{6}\.png$/.test(f)).sort();
-  for (let i = 0; i < extracted.length; i++) {
-    const originalFrame = i * sampleEvery;
-    const newName = `${videoBase}_f${String(originalFrame).padStart(7, "0")}.png`;
-    await fs.rename(path.join(outDir, extracted[i]), path.join(outDir, newName));
-  }
-  return extracted.length;
+/** Parse ffmpeg's "time=hh:mm:ss.xx" progress field into seconds, or null. */
+export function parseProgressTime(line: string): number | null {
+  const m = line.match(/time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null;
 }
 
 export interface RunIntakeOptions {
@@ -156,17 +112,17 @@ export interface RunIntakeOptions {
   sourcePath: string;
   ffmpegPath: string;
   ffprobePath: string;
-  sampleEvery: number;
   now: string;
-  importedBy?: string;
-  onProgress?: (p: { phase: "copy" | "probe" | "extract"; frames?: number }) => void;
+  onProgress?: (p: { phase: "copy" | "probe" | "preview"; percent?: number }) => void;
 }
 
-/** Full intake: copy → hash → probe → extract → write intake.json. */
+/** Full intake: copy → hash → probe → (preview) → write intake.json. */
 export async function runIntake(opts: RunIntakeOptions): Promise<IntakeRecord> {
   const dir = projectDir(opts.baseDir, opts.projectId);
-  const sourceDir = path.join(dir, "00_intake", "source");
-  const rawDir = path.join(dir, "01_frames", "raw");
+  const intakeDir = path.join(dir, "00_intake");
+  const sourceDir = path.join(intakeDir, "source");
+  // A re-import replaces the previous video rather than sitting beside it.
+  await fs.rm(sourceDir, { recursive: true, force: true });
   await fs.mkdir(sourceDir, { recursive: true });
 
   const destName = safeBasename(opts.sourcePath);
@@ -179,28 +135,32 @@ export async function runIntake(opts: RunIntakeOptions): Promise<IntakeRecord> {
   opts.onProgress?.({ phase: "probe" });
   const meta = await probeVideo(opts.ffprobePath, dest);
 
-  opts.onProgress?.({ phase: "extract" });
-  const videoBase = safeBasename(opts.sourcePath).replace(/\.[^.]+$/, "");
-  const framesExtracted = await extractFrames(
-    opts.ffmpegPath,
-    dest,
-    rawDir,
-    opts.sampleEvery,
-    videoBase,
-    (p) => opts.onProgress?.({ phase: "extract", frames: p.frames }),
-  );
+  const previewPath = path.join(intakeDir, "preview.mp4");
+  await fs.rm(previewPath, { force: true });
+  let playbackFile = `source/${destName}`;
+  if (!isBrowserPlayable(destName, meta.codec)) {
+    opts.onProgress?.({ phase: "preview", percent: 0 });
+    const res = await run(opts.ffmpegPath, buildPreviewArgs(dest, previewPath), {
+      onStderrLine: (line) => {
+        const sec = parseProgressTime(line);
+        if (sec != null && meta.durationSec > 0) {
+          opts.onProgress?.({ phase: "preview", percent: Math.min(100, Math.round((sec / meta.durationSec) * 100)) });
+        }
+      },
+    });
+    if (res.code !== 0) throw new Error(`ffmpeg preview failed (${res.code}): ${res.stderr.slice(-400)}`);
+    playbackFile = "preview.mp4";
+  }
 
   const record: IntakeRecord = {
     schemaVersion: 1,
     sourceFile: destName,
     sourcePath: opts.sourcePath,
-    ...(opts.importedBy ? { importedBy: opts.importedBy } : {}),
     importedAt: opts.now,
     sha256,
-    frameSampleEvery: opts.sampleEvery,
-    framesExtracted,
+    playbackFile,
     meta,
   };
-  await writeJsonAtomic(path.join(dir, "00_intake", "intake.json"), record);
+  await writeJsonAtomic(path.join(intakeDir, "intake.json"), record);
   return record;
 }

@@ -1,3 +1,29 @@
+# EndoSeg — v0.2.0 (2026-10-23)
+
+## New stage: Phases (Intake → **Phases** → Segmentation → Export)
+- **Label phases** on the project page opens a video player. Phases: **Duodenum, Pre-cannulation, Cannulation attempt, Cannulation success, Post-cannulation, Fluoroscopy**.
+- Press a phase key **1–6** to start that phase at the playhead and press it again to end it. Pressing a different phase key ends the current phase there and starts the next. A phase can occur several times (e.g. repeated cannulation attempts).
+- Player keys: Space play/pause, ←/→ ±1 s (Shift ±10 s), `,`/`.` one frame, Esc cancels an open phase, Del deletes the selected span. Speeds 0.25×–8×. Each span can be retyped, trimmed to the playhead or deleted. Labels autosave to `00_intake/phases.json`.
+- **Export clips + frames:**
+  - One frame-accurate H.264 clip per span → `<phase clips folder>\<case>_<phase>\<case>_<phase>_NN.mp4`. `<case>` is the folder the video came from. The default folder is `R:\akshin-ercp-nas\Annotated Videos`. Re-exporting replaces the clips EndoSeg wrote and leaves other files in those folders alone.
+  - Frames at **1 fps** (Settings) from every phase except fluoroscopy → `01_frames/raw/<case>_t<ms>_<phase>.png`, indexed in `01_frames/frames.json`. Each frame is the first source frame at or after its time stamp.
+
+## Intake
+- **New project from video…** opens in `R:\akshin-ercp-nas\Raw ERCP Videos` and names the project after the video's folder.
+- Intake no longer extracts every-Nth frames; frames now come from the Phases stage.
+- Videos the player can't open (e.g. AVI/MJPEG, HEVC) get a 1280 px H.264 preview copy (`00_intake/preview.mp4`) used only for labelling. Clips and frames are always cut from the original.
+- A re-import replaces the previous source video.
+
+## Annotator
+- Each frame starts with the phase it was extracted from (pick list updated to the new phases); a phase saved earlier still wins.
+- Dataset export now only includes frames that have annotations.
+
+## Tracking removed (tracked manually)
+- Removed the name sign-in, Activity page/logs, Ongoing/Complete status and the "taken in by" fields. Existing `activity/` files and old manifest fields are ignored and nothing is deleted.
+
+## Settings
+- New: raw videos folder, phase clips folder, segmentation frame rate (default 1 fps). Removed: frame sampling (every Nth).
+
 # EndoSeg Annotator — v0.1.2 (2026-10-22)
 
 ## Start-up sign-in

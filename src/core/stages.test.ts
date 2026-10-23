@@ -42,6 +42,8 @@ describe("setStage", () => {
   it("advances currentStage as stages complete in order", () => {
     let p = createProject("c", "C", T0);
     p = setStage(p, "intake", { status: "done" }, T1);
+    expect(currentStage(p)).toBe("phases");
+    p = setStage(p, "phases", { status: "done" }, T1);
     expect(currentStage(p)).toBe("segmentation");
     p = setStage(p, "segmentation", { status: "done" }, T1);
     p = setStage(p, "export", { status: "done" }, T1);

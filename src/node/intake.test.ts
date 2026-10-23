@@ -7,7 +7,7 @@ import {
   parseFps,
   parseFfprobe,
   safeBasename,
-  buildExtractArgs,
+  parseProgressTime,
   buildProbeArgs,
   sha256File,
   runIntake,
@@ -61,15 +61,10 @@ describe("safeBasename", () => {
   });
 });
 
-describe("buildExtractArgs", () => {
-  it("escapes the comma inside mod() and honours sampleEvery", () => {
-    const args = buildExtractArgs("in.mp4", "out/frame_%06d.png", 6);
-    expect(args).toContain("select=not(mod(n\\,6))");
-    expect(args).toContain("-i");
-    expect(args).toContain("out/frame_%06d.png");
-  });
-  it("clamps sampleEvery to >= 1", () => {
-    expect(buildExtractArgs("in", "out", 0)).toContain("select=not(mod(n\\,1))");
+describe("parseProgressTime", () => {
+  it("reads ffmpeg's time= field", () => {
+    expect(parseProgressTime("frame=  120 fps=60 time=00:01:02.50 bitrate=1kbits/s")).toBe(62.5);
+    expect(parseProgressTime("no progress here")).toBeNull();
   });
 });
 
@@ -104,67 +99,48 @@ describe("runIntake (real ffmpeg integration)", () => {
     await fs.rm(base, { recursive: true, force: true });
   });
 
-  it("copies, probes, and extracts every 6th frame of a synthesized clip", async () => {
-    // Synthesize a 2s, 30fps, 64x64 test clip → 60 frames total.
-    const src = path.join(base, "Test Clip.mp4");
+  const synth = async (file: string, codec: string[] = ["-pix_fmt", "yuv420p"]) => {
     const gen = await run(ffmpegPath, [
-      "-hide_banner", "-f", "lavfi",
-      "-i", "testsrc=duration=2:size=64x64:rate=30",
-      "-pix_fmt", "yuv420p", "-y", src,
+      "-hide_banner", "-f", "lavfi", "-i", "testsrc=duration=2:size=64x64:rate=30", ...codec, "-y", file,
     ]);
     expect(gen.code).toBe(0);
+  };
 
+  it("copies, hashes and probes an mp4, which the player streams directly", async () => {
+    const src = path.join(base, "Test Clip.mp4");
+    await synth(src);
     const record = await runIntake({
-      baseDir: base,
-      projectId: "case-x",
-      sourcePath: src,
-      ffmpegPath,
-      ffprobePath,
-      sampleEvery: 6,
-      now: "2026-06-13T10:00:00.000Z",
+      baseDir: base, projectId: "case-x", sourcePath: src, ffmpegPath, ffprobePath, now: "2026-06-13T10:00:00.000Z",
     });
 
-    // Source copied with a sanitized name.
     expect(record.sourceFile).toBe("Test_Clip.mp4");
-    const copied = path.join(base, "projects", "case-x", "00_intake", "source", "Test_Clip.mp4");
-    expect((await fs.stat(copied)).isFile()).toBe(true);
-
-    // Metadata read correctly.
-    expect(record.meta.width).toBe(64);
-    expect(record.meta.height).toBe(64);
-    expect(record.meta.fps).toBe(30);
+    const intakeDir = path.join(base, "projects", "case-x", "00_intake");
+    expect((await fs.stat(path.join(intakeDir, "source", "Test_Clip.mp4"))).isFile()).toBe(true);
+    expect(record.meta).toMatchObject({ width: 64, height: 64, fps: 30, codec: "h264" });
     expect(Math.round(record.meta.durationSec)).toBe(2);
     expect(record.sha256).toHaveLength(64);
-
-    // 60 frames, keeping every 6th (n=0,6,...,54) → 10 frames.
-    expect(record.framesExtracted).toBe(10);
-    const rawDir = path.join(base, "projects", "case-x", "01_frames", "raw");
-    const frames = (await fs.readdir(rawDir)).filter((f) => f.endsWith(".png"));
-    expect(frames).toHaveLength(10);
-
-    // intake.json written.
-    const onDisk = JSON.parse(
-      await fs.readFile(path.join(base, "projects", "case-x", "00_intake", "intake.json"), "utf8"),
-    );
-    expect(onDisk.framesExtracted).toBe(10);
+    expect(record.playbackFile).toBe("source/Test_Clip.mp4");
+    const onDisk = JSON.parse(await fs.readFile(path.join(intakeDir, "intake.json"), "utf8"));
+    expect(onDisk.playbackFile).toBe("source/Test_Clip.mp4");
   }, 30000);
 
-  it("re-running intake replaces frames instead of mixing in the previous set", async () => {
-    const src = path.join(base, "Clip.mp4");
-    const gen = await run(ffmpegPath, [
-      "-hide_banner", "-f", "lavfi",
-      "-i", "testsrc=duration=2:size=64x64:rate=30",
-      "-pix_fmt", "yuv420p", "-y", src,
-    ]);
-    expect(gen.code).toBe(0);
-    const opts = { baseDir: base, projectId: "case-y", sourcePath: src, ffmpegPath, ffprobePath, sampleEvery: 6, now: "x" };
-    await runIntake(opts);
-    const second = await runIntake(opts);
-    expect(second.framesExtracted).toBe(10);
-    const rawDir = path.join(base, "projects", "case-y", "01_frames", "raw");
-    const frames = (await fs.readdir(rawDir)).sort();
-    expect(frames).toHaveLength(10);
-    expect(frames[0]).toBe("Clip_f0000000.png");
-    expect(frames[9]).toBe("Clip_f0000054.png");
-  }, 30000);
+  it("makes an H.264 preview for an AVI, and a re-import replaces the old source", async () => {
+    const avi = path.join(base, "video.avi");
+    await synth(avi, ["-c:v", "mjpeg", "-q:v", "5", "-pix_fmt", "yuvj420p"]);
+    const opts = { baseDir: base, projectId: "case-y", ffmpegPath, ffprobePath, now: "x" };
+    const progress: string[] = [];
+    const record = await runIntake({ ...opts, sourcePath: avi, onProgress: (p) => progress.push(p.phase) });
+    expect(record.playbackFile).toBe("preview.mp4");
+    expect(progress).toContain("preview");
+    const intakeDir = path.join(base, "projects", "case-y", "00_intake");
+    const { stdout } = await run(ffprobePath, ["-v", "quiet", "-print_format", "json", "-show_streams", path.join(intakeDir, "preview.mp4")]);
+    expect(JSON.parse(stdout).streams[0].codec_name).toBe("h264");
+
+    const mp4 = path.join(base, "other.mp4");
+    await synth(mp4);
+    const second = await runIntake({ ...opts, sourcePath: mp4 });
+    expect(second.playbackFile).toBe("source/other.mp4");
+    expect(await fs.readdir(path.join(intakeDir, "source"))).toEqual(["other.mp4"]);
+    await expect(fs.stat(path.join(intakeDir, "preview.mp4"))).rejects.toThrow();
+  }, 60000);
 });

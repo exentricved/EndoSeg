@@ -9,7 +9,6 @@ import {
   type StageId,
   type StageState,
   type StageStatus,
-  type WorkInfo,
   createProject,
   setStage,
 } from "../core/stages.js";
@@ -192,21 +191,6 @@ export async function updateStageOnDisk(
   const m = await readManifest(baseDir, id);
   if (!m) return null;
   const next = setStage(m, stage, patch, now);
-  await writeManifest(baseDir, next);
-  return next;
-}
-
-/** Merge a patch into a project's work record (intake/owner/status) and persist it. */
-export async function updateWorkOnDisk(
-  baseDir: string,
-  id: string,
-  patch: Partial<WorkInfo>,
-  now: string,
-): Promise<ProjectManifest | null> {
-  const m = await readManifest(baseDir, id);
-  if (!m) return null;
-  const work: WorkInfo = { status: "ongoing", ...m.work, ...patch };
-  const next: ProjectManifest = { ...m, updatedAt: now, work };
   await writeManifest(baseDir, next);
   return next;
 }

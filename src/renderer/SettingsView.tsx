@@ -56,6 +56,11 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
     }
   }, [onChanged]);
 
+  const chooseSettingDir = useCallback(async (key: "rawVideosDir" | "phaseExportDir") => {
+    const next = await window.endoseg.chooseSettingDir(key);
+    if (next) setSettings(next);
+  }, []);
+
   if (!settings) return <main className="settings"><p className="muted">Loading…</p></main>;
 
   return (
@@ -105,23 +110,55 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
 
       <section className="setting-row">
         <div className="setting-label">
-          <strong>Frame sampling</strong>
-          <p className="muted">Keep 1 of every N frames extracted from intake video.</p>
+          <strong>Raw videos folder</strong>
+          <p className="muted">Where the video picker opens.</p>
+        </div>
+        <div className="setting-control">
+          <code className="path">{settings.rawVideosDir ?? "R:\\akshin-ercp-nas\\Raw ERCP Videos (when R: is mapped)"}</code>
+          <button className="secondary" onClick={() => void chooseSettingDir("rawVideosDir")}>Change…</button>
+          {settings.rawVideosDir && (
+            <button className="secondary" onClick={() => void patch({ rawVideosDir: null })}>
+              Reset to default
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className="setting-row">
+        <div className="setting-label">
+          <strong>Phase clips folder</strong>
+          <p className="muted">Each phase span is exported as a clip into {"<case>_<phase>"} folders here.</p>
+        </div>
+        <div className="setting-control">
+          <code className="path">{settings.phaseExportDir ?? "R:\\akshin-ercp-nas\\Annotated Videos (when R: is mapped, else Documents)"}</code>
+          <button className="secondary" onClick={() => void chooseSettingDir("phaseExportDir")}>Change…</button>
+          {settings.phaseExportDir && (
+            <button className="secondary" onClick={() => void patch({ phaseExportDir: null })}>
+              Reset to default
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className="setting-row">
+        <div className="setting-label">
+          <strong>Segmentation frame rate</strong>
+          <p className="muted">Frames per second extracted from every phase except fluoroscopy.</p>
         </div>
         <div className="setting-control">
           <label>
-            Every
             <input
               type="number"
-              min={1}
-              max={1000}
-              value={settings.frameSampleEvery}
+              min={0.1}
+              max={30}
+              step={0.5}
+              value={settings.phaseFps}
               onChange={(e) => {
                 const n = Number(e.target.value);
-                if (Number.isInteger(n) && n >= 1 && n <= 1000) void patch({ frameSampleEvery: n });
+                if (Number.isFinite(n) && n > 0 && n <= 30) void patch({ phaseFps: n });
               }}
             />
-            th frame
+            fps
           </label>
         </div>
       </section>

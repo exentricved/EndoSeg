@@ -1,0 +1,166 @@
+// Phases stage IO: persist a video's phase labels, then export them — one
+// re-encoded clip per span into <exportRoot>/<case>_<phase>/, and 1 fps frames
+// of the endoscopic phases into 01_frames/raw/ for the annotator.
+
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
+import { run } from "./proc.js";
+import { projectDir, writeJsonAtomic } from "./library.js";
+import type { IntakeRecord } from "./intake.js";
+import {
+  type PhaseId,
+  type PhaseLabels,
+  PHASES,
+  phaseById,
+  parsePhaseLabels,
+  numberSpans,
+  caseNameFromSource,
+  phaseFolderName,
+  phaseClipName,
+  phaseFrameName,
+  buildClipArgs,
+  buildPhaseFrameArgs,
+} from "../core/phases.js";
+
+function phasesFile(baseDir: string, projectId: string): string {
+  return path.join(projectDir(baseDir, projectId), "00_intake", "phases.json");
+}
+
+/** Index of extracted frames → phase/time, read back by the annotator. */
+export function frameIndexFile(baseDir: string, projectId: string): string {
+  return path.join(projectDir(baseDir, projectId), "01_frames", "frames.json");
+}
+
+export async function loadPhaseLabels(baseDir: string, projectId: string): Promise<PhaseLabels> {
+  try {
+    return parsePhaseLabels(JSON.parse(await fs.readFile(phasesFile(baseDir, projectId), "utf8")));
+  } catch {
+    return { version: 1, spans: [] };
+  }
+}
+
+export async function savePhaseLabels(baseDir: string, projectId: string, raw: unknown): Promise<PhaseLabels> {
+  const labels = parsePhaseLabels(raw);
+  await writeJsonAtomic(phasesFile(baseDir, projectId), labels);
+  return labels;
+}
+
+export async function readIntakeRecord(baseDir: string, projectId: string): Promise<IntakeRecord | null> {
+  try {
+    const file = path.join(projectDir(baseDir, projectId), "00_intake", "intake.json");
+    return JSON.parse(await fs.readFile(file, "utf8")) as IntakeRecord;
+  } catch {
+    return null;
+  }
+}
+
+export interface FrameIndexEntry {
+  phase: PhaseId;
+  /** Seconds from the start of the source video. */
+  timeSec: number;
+}
+
+/** frame file name → phase/time; empty when frames came from the old every-Nth intake. */
+export async function loadFrameIndex(baseDir: string, projectId: string): Promise<Record<string, FrameIndexEntry>> {
+  try {
+    const raw = JSON.parse(await fs.readFile(frameIndexFile(baseDir, projectId), "utf8")) as { frames?: unknown };
+    return raw.frames && typeof raw.frames === "object" ? (raw.frames as Record<string, FrameIndexEntry>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export interface PhaseExportProgress {
+  step: "clip" | "frames";
+  phase: PhaseId;
+  done: number;
+  total: number;
+}
+
+export interface PhaseExportResult {
+  caseName: string;
+  exportRoot: string;
+  clips: number;
+  frames: number;
+}
+
+export interface RunPhaseExportOptions {
+  baseDir: string;
+  projectId: string;
+  ffmpegPath: string;
+  /** Root the <case>_<phase> folders are created in. */
+  exportRoot: string;
+  /** Frames per second extracted from the endoscopic phases. */
+  fps: number;
+  onProgress?: (p: PhaseExportProgress) => void;
+}
+
+/** Our own clips from a previous export (other files in the folder are left alone). */
+function isOwnClip(file: string, folder: string): boolean {
+  return file.startsWith(`${folder}_`) && /_\d{2}\.mp4$/.test(file);
+}
+
+export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<PhaseExportResult> {
+  const intake = await readIntakeRecord(opts.baseDir, opts.projectId);
+  if (!intake) throw new Error("No video taken in yet");
+  const labels = await loadPhaseLabels(opts.baseDir, opts.projectId);
+  if (!labels.spans.length) throw new Error("No phases labelled yet");
+
+  const dir = projectDir(opts.baseDir, opts.projectId);
+  const source = path.join(dir, "00_intake", "source", intake.sourceFile);
+  const caseName = caseNameFromSource(intake.sourcePath);
+  const numbered = numberSpans(labels.spans);
+  const fail = (what: string, res: { code: number; stderr: string }) =>
+    new Error(`ffmpeg ${what} failed (${res.code}): ${res.stderr.slice(-400)}`);
+
+  // 1. Clips. Clear previous clips first so a deleted span doesn't leave its clip behind.
+  for (const p of PHASES) {
+    const folder = phaseFolderName(caseName, p.id);
+    const folderPath = path.join(opts.exportRoot, folder);
+    let names: string[] = [];
+    try { names = await fs.readdir(folderPath); } catch { /* not created yet */ }
+    for (const n of names) if (isOwnClip(n, folder)) await fs.rm(path.join(folderPath, n), { force: true });
+  }
+  let clips = 0;
+  for (const { span, index } of numbered) {
+    opts.onProgress?.({ step: "clip", phase: span.phase, done: clips, total: numbered.length });
+    const folderPath = path.join(opts.exportRoot, phaseFolderName(caseName, span.phase));
+    await fs.mkdir(folderPath, { recursive: true });
+    const out = path.join(folderPath, phaseClipName(caseName, span.phase, index));
+    const res = await run(opts.ffmpegPath, buildClipArgs(source, out, span.start, span.end));
+    if (res.code !== 0) throw fail("clip", res);
+    clips++;
+  }
+
+  // 2. Frames for segmentation, endoscopic phases only. raw/ is rebuilt from scratch.
+  const rawDir = path.join(dir, "01_frames", "raw");
+  const tmpDir = path.join(dir, "01_frames", `extract.tmp-${process.pid}`);
+  await fs.rm(rawDir, { recursive: true, force: true });
+  await fs.mkdir(rawDir, { recursive: true });
+  const index: Record<string, FrameIndexEntry> = {};
+  const frameSpans = numbered.filter(({ span }) => phaseById(span.phase)?.frames);
+  for (let i = 0; i < frameSpans.length; i++) {
+    const { span } = frameSpans[i]!;
+    opts.onProgress?.({ step: "frames", phase: span.phase, done: i, total: frameSpans.length });
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    await fs.mkdir(tmpDir, { recursive: true });
+    const res = await run(
+      opts.ffmpegPath,
+      buildPhaseFrameArgs(source, path.join(tmpDir, "f_%06d.png"), span.start, span.end, opts.fps),
+    );
+    if (res.code !== 0) throw fail("frame extraction", res);
+    const files = (await fs.readdir(tmpDir)).filter((f) => /^f_\d{6}\.png$/.test(f)).sort();
+    for (let k = 0; k < files.length; k++) {
+      const timeSec = span.start + k / opts.fps;
+      const name = phaseFrameName(caseName, span.phase, timeSec);
+      // Overlapping spans of the same phase can land on the same name; first wins.
+      if (index[name]) continue;
+      await fs.rename(path.join(tmpDir, files[k]!), path.join(rawDir, name));
+      index[name] = { phase: span.phase, timeSec: Math.round(timeSec * 1000) / 1000 };
+    }
+  }
+  await fs.rm(tmpDir, { recursive: true, force: true });
+  await writeJsonAtomic(frameIndexFile(opts.baseDir, opts.projectId), { version: 1, fps: opts.fps, frames: index });
+
+  return { caseName, exportRoot: opts.exportRoot, clips, frames: Object.keys(index).length };
+}

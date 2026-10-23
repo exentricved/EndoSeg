@@ -11,10 +11,12 @@ export interface Settings {
   libraryDir: string | null;
   /** Export location; null means "inside each project's 03_export folder". */
   exportDir: string | null;
-  /** Last name entered at start-up — only used to prefill the sign-in box. */
-  userName: string | null;
-  /** Keep 1 of every N extracted frames on intake. */
-  frameSampleEvery: number;
+  /** Folder the video picker opens in; null means the NAS "Raw ERCP Videos" folder when mapped. */
+  rawVideosDir: string | null;
+  /** Where <case>_<phase> clip folders go; null means the NAS "Annotated Videos" folder when mapped. */
+  phaseExportDir: string | null;
+  /** Frames per second extracted from the endoscopic phases for segmentation. */
+  phaseFps: number;
   /** Compute preference for the segmentation pipeline. */
   gpu: GpuMode;
 }
@@ -22,8 +24,9 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   libraryDir: null,
   exportDir: null,
-  userName: null,
-  frameSampleEvery: 4, // ~7.5 fps at 30 fps source — dense enough for frame-to-frame tracking
+  rawVideosDir: null,
+  phaseExportDir: null,
+  phaseFps: 1,
   gpu: "auto",
 };
 
@@ -44,23 +47,14 @@ export function normalizeSettings(raw: unknown): Settings {
     out.libraryDir = null;
   }
 
-  if (typeof raw.userName === "string" && raw.userName.trim()) {
-    out.userName = raw.userName.trim().slice(0, 80);
+  for (const k of ["exportDir", "rawVideosDir", "phaseExportDir"] as const) {
+    const v = raw[k];
+    if (typeof v === "string" && v.trim()) out[k] = v;
+    else if (v === null) out[k] = null;
   }
 
-  if (typeof raw.exportDir === "string" && raw.exportDir.trim()) {
-    out.exportDir = raw.exportDir;
-  } else if (raw.exportDir === null) {
-    out.exportDir = null;
-  }
-
-  if (
-    typeof raw.frameSampleEvery === "number" &&
-    Number.isInteger(raw.frameSampleEvery) &&
-    raw.frameSampleEvery >= 1 &&
-    raw.frameSampleEvery <= 1000
-  ) {
-    out.frameSampleEvery = raw.frameSampleEvery;
+  if (typeof raw.phaseFps === "number" && Number.isFinite(raw.phaseFps) && raw.phaseFps > 0 && raw.phaseFps <= 30) {
+    out.phaseFps = raw.phaseFps;
   }
 
   if (typeof raw.gpu === "string" && GPU_MODES.includes(raw.gpu as GpuMode)) {
@@ -70,19 +64,10 @@ export function normalizeSettings(raw: unknown): Settings {
   return out;
 }
 
-/** Old default sampling, superseded by every-4th-frame when dedup was removed. */
-const LEGACY_SAMPLE_DEFAULT = 15;
-
 export async function loadSettings(file: string): Promise<Settings> {
   try {
     const txt = await fs.readFile(file, "utf8");
-    const raw: unknown = JSON.parse(txt);
-    // Files from the dedup era always contain dedupThreshold; if they still hold
-    // the old default sampling, move them to the new default.
-    if (isObject(raw) && "dedupThreshold" in raw && raw.frameSampleEvery === LEGACY_SAMPLE_DEFAULT) {
-      raw.frameSampleEvery = DEFAULT_SETTINGS.frameSampleEvery;
-    }
-    return normalizeSettings(raw);
+    return normalizeSettings(JSON.parse(txt));
   } catch {
     return { ...DEFAULT_SETTINGS };
   }

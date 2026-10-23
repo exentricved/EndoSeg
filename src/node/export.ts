@@ -343,15 +343,6 @@ export async function runExport(
     const pngName = `${f.name}.png`;
     let imageCopied = false;
     let labelMapWritten = false;
-
-    // Copy the source frame image.
-    if (framesDir) {
-      try {
-        await fs.copyFile(path.join(framesDir, pngName), path.join(imagesDir, pngName));
-        imageCopied = true;
-      } catch { /* frame file missing; skip */ }
-    }
-
     const polys = f.polygons ?? [];
 
     // Build label map from polygon annotations + any brush-painted pixel masks.
@@ -371,6 +362,16 @@ export async function runExport(
         labelMapWritten = true;
         labelMapCount++;
       }
+    }
+    // Every frame carries a phase, so the snapshot lists unannotated frames too; leave those out.
+    if (!labelMapWritten && polys.length === 0) continue;
+
+    // Copy the source frame image.
+    if (framesDir) {
+      try {
+        await fs.copyFile(path.join(framesDir, pngName), path.join(imagesDir, pngName));
+        imageCopied = true;
+      } catch { /* frame file missing; skip */ }
     }
 
     metaFrames.push({
@@ -400,5 +401,5 @@ export async function runExport(
     "utf8",
   );
 
-  return { exportId, exportDir, frameCount: total, labelMapCount };
+  return { exportId, exportDir, frameCount: metaFrames.length, labelMapCount };
 }

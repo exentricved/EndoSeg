@@ -1,7 +1,7 @@
 # EndoSeg (desktop app)
 
 Offline Electron desktop app for the sphincterotomy/ERCP video pipeline:
-**Intake → Segmentation → Export**. See [`../EndoSeg.md`](../EndoSeg.md)
+**Intake → Phases → Segmentation → Export**. See [`../EndoSeg.md`](../EndoSeg.md)
 for the full specification.
 
 ## Built so far (phases 1–3)
@@ -10,9 +10,11 @@ for the full specification.
 - Project **library** on disk with the full stage directory skeleton per project
 - **Project Hub** landing view: every project with a pipeline stage indicator
 - **Project detail** view with per-stage cards
-- **Settings**: library location, frame-sampling rate (every 6th), compute mode, updates
+- **Settings**: library, raw-videos and phase-clip folders, segmentation frame rate, compute mode, updates
 - **Intake**: pick a video → copy into the project, SHA-256 hash, ffprobe metadata,
-  extract every Nth frame (bundled ffmpeg/ffprobe — no Python needed)
+  H.264 preview copy when the player can't open it (bundled ffmpeg/ffprobe — no Python needed)
+- **Phases**: label procedure phases on the video; export one clip per span to
+  `<case>_<phase>/` folders and 1 fps frames of the endoscopic phases for segmentation
 - **Auto-update** via electron-updater + GitHub Releases (Settings → Updates)
 - **Troubleshooting** page: viewable, copy/paste-able crash log
 - Global crash handlers (main, renderer, child process) → PHI-free incident reports
@@ -48,7 +50,7 @@ Settings.
 
 ## Pushing an update
 
-1. Set `owner`/`repo` in `electron-builder.yml` to your GitHub repo (one-time).
-2. Bump `version` in `package.json`.
-3. `set GH_TOKEN=<token>` then `npm run release`.
-4. Installed apps see it under **Settings → Updates → Check for updates**.
+1. Bump `version` in `package.json` and commit.
+2. Push a matching tag (`git tag v0.2.0 && git push origin main v0.2.0`). The
+   Release workflow builds Windows + macOS and publishes a GitHub Release.
+3. Installed apps see it under **Settings → Updates → Check for updates**.

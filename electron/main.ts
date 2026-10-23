@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from "electron";
-import { promises as fs, existsSync } from "node:fs";
-import * as os from "node:os";
+import { promises as fs, existsSync, createReadStream } from "node:fs";
+import { Readable } from "node:stream";
 import * as path from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import { path as ffprobePathRaw } from "ffprobe-static";
@@ -10,6 +10,8 @@ import {
   type LibraryState,
   type IntakeProgress,
   type ExportProgress,
+  type PhaseExportProgress,
+  type PhasesState,
   type UpdateStatus,
 } from "../src/shared/ipc.js";
 import {
@@ -17,12 +19,13 @@ import {
   listProjects,
   readManifest,
   updateStageOnDisk,
-  updateWorkOnDisk,
   checkLibrary,
+  projectDir,
   type LibraryCheck,
 } from "../src/node/library.js";
-import { type Identity, logActivity, readActivity, activityDir } from "../src/node/activity.js";
 import { runIntake } from "../src/node/intake.js";
+import { loadPhaseLabels, savePhaseLabels, readIntakeRecord, runPhaseExport } from "../src/node/phases.js";
+import { caseNameFromSource } from "../src/core/phases.js";
 import {
   listSegFrames,
   loadSegmentationSnapshot,
@@ -51,6 +54,11 @@ protocol.registerSchemesAsPrivileged([
     scheme: "endoseg-frame",
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
   },
+  // The project's intake video (or its preview proxy) for the phase-labelling player.
+  {
+    scheme: "endoseg-video",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
 ]);
 
 let mainWindow: BrowserWindow | null = null;
@@ -59,12 +67,6 @@ let crashLogger: CrashLogger;
 let settings: Settings;
 let libraryDir = "";
 let libraryCheck: LibraryCheck = { writable: false };
-/** Name entered on the start-up screen; null until someone signs in. */
-let operator: string | null = null;
-
-function currentIdentity(): Identity {
-  return { user: operator ?? "unknown", host: os.hostname() };
-}
 
 // ── Settings + library location ──────────────────────────────────────────────
 
@@ -76,11 +78,25 @@ function settingsPath(): string {
 // that drive is mapped; otherwise fall back to Documents.
 const SHARED_LIBRARY_ROOT = "R:\\akshin-ercp-nas";
 
-function defaultLibraryDir(): string {
+/** <NAS>\<name> when the NAS is mapped, else Documents\<fallback>. */
+function onSharedDrive(name: string, fallback: string): string {
   if (process.platform === "win32" && existsSync(SHARED_LIBRARY_ROOT)) {
-    return path.join(SHARED_LIBRARY_ROOT, "EndoSeg Library");
+    return path.join(SHARED_LIBRARY_ROOT, name);
   }
-  return path.join(app.getPath("documents"), "EndoSeg Library");
+  return path.join(app.getPath("documents"), fallback);
+}
+
+function defaultLibraryDir(): string {
+  return onSharedDrive("EndoSeg Library", "EndoSeg Library");
+}
+
+function rawVideosDir(): string {
+  return settings.rawVideosDir ?? onSharedDrive("Raw ERCP Videos", "");
+}
+
+/** Root the <case>_<phase> clip folders are written to. */
+function phaseExportRoot(): string {
+  return settings.phaseExportDir ?? onSharedDrive("Annotated Videos", "EndoSeg Annotated Videos");
 }
 
 /** Resolve the effective library dir from settings (null → default). */
@@ -154,7 +170,6 @@ function appInfo(): AppInfo {
     platform: process.platform,
     electron: process.versions.electron,
     libraryDir,
-    user: operator ?? "",
   };
 }
 
@@ -164,18 +179,6 @@ function registerIpc(): void {
   ipcMain.handle(IPC.libraryGet, async () => {
     await ensureLibrary(libraryDir); // re-check: the NAS may have (re)connected
     return libraryState();
-  });
-
-  ipcMain.handle(IPC.sessionStart, async (_e, name: unknown): Promise<AppInfo> => {
-    const clean = typeof name === "string" ? name.trim().slice(0, 80) : "";
-    if (clean) {
-      operator = clean;
-      // Pin the library that was shown at sign-in, so a later launch while the
-      // NAS is offline reports an error instead of silently using Documents.
-      settings = applySettings(settings, { userName: clean, libraryDir });
-      await saveSettings(settingsPath(), settings);
-    }
-    return appInfo();
   });
 
   ipcMain.handle(IPC.libraryCreate, async (_e, name: unknown) => {
@@ -219,6 +222,18 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.settingsGet, (): Settings => settings);
 
+  ipcMain.handle(IPC.settingChooseDir, async (_e, key: unknown): Promise<Settings | null> => {
+    if (key !== "rawVideosDir" && key !== "phaseExportDir") return null;
+    const res = await dialog.showOpenDialog(mainWindow!, {
+      title: key === "rawVideosDir" ? "Choose raw videos folder" : "Choose phase export folder",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    settings = applySettings(settings, { [key]: res.filePaths[0] });
+    await saveSettings(settingsPath(), settings);
+    return settings;
+  });
+
   ipcMain.handle(IPC.settingsUpdate, async (_e, patch: unknown): Promise<Settings> => {
     settings = applySettings(settings, patch);
     await saveSettings(settingsPath(), settings);
@@ -229,7 +244,8 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.intakePickVideo, async (): Promise<string | null> => {
     const res = await dialog.showOpenDialog(mainWindow!, {
-      title: "Select sphincterotomy video",
+      title: "Select ERCP video",
+      ...(existsSync(rawVideosDir()) ? { defaultPath: rawVideosDir() } : {}),
       properties: ["openFile"],
       filters: [
         { name: "Video", extensions: ["mp4", "mov", "avi", "mkv", "m4v", "wmv", "mpg", "mpeg"] },
@@ -243,40 +259,22 @@ function registerIpc(): void {
     if (typeof projectId !== "string" || typeof sourcePath !== "string") return null;
     if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
     const send = (p: IntakeProgress) => mainWindow?.webContents.send(IPC.intakeProgress, p);
-    const who = currentIdentity();
-    const file = path.basename(sourcePath);
-    const startedAt = nowIso();
-    const m = await updateWorkOnDisk(
-      libraryDir,
-      projectId,
-      { status: "ongoing", intakeBy: who.user, intakeAt: startedAt, sourceFile: file, sourcePath, statusBy: who.user, statusAt: startedAt },
-      startedAt,
-    );
-    const projectName = m?.name;
-    await logActivity(libraryDir, { at: startedAt, action: "intake_started", projectId, projectName, file: sourcePath, status: "ongoing" }, who);
     try {
       await updateStageOnDisk(libraryDir, projectId, "intake", { status: "in_progress" }, nowIso());
       const record = await runIntake({
-        importedBy: who.user,
         baseDir: libraryDir,
         projectId,
         sourcePath,
         ffmpegPath: resolveBinary(ffmpegPath),
         ffprobePath: resolveBinary(ffprobePathRaw),
-        sampleEvery: settings.frameSampleEvery,
         now: nowIso(),
         onProgress: send,
       });
-      await logActivity(
-        libraryDir,
-        { at: nowIso(), action: "intake_completed", projectId, projectName, file: sourcePath, sha256: record.sha256, detail: `${record.framesExtracted} frames` },
-        who,
-      );
       return await updateStageOnDisk(
         libraryDir,
         projectId,
         "intake",
-        { status: "done", counts: { sources: 1, frames: record.framesExtracted } },
+        { status: "done", counts: { sources: 1, minutes: Math.round(record.meta.durationSec / 6) / 10 } },
         nowIso(),
       );
     } catch (err) {
@@ -285,9 +283,65 @@ function registerIpc(): void {
         { source: "intake", message: e.message, detail: e.stack, projectId, stage: "intake" },
         nowIso(),
       );
-      await logActivity(libraryDir, { at: nowIso(), action: "intake_failed", projectId, projectName, file: sourcePath, detail: e.message }, who);
       return updateStageOnDisk(libraryDir, projectId, "intake", { status: "error", error: e.message }, nowIso());
     }
+  });
+
+  ipcMain.handle(IPC.phasesLoad, async (_e, projectId: unknown): Promise<PhasesState | null> => {
+    if (typeof projectId !== "string") return null;
+    const intake = await readIntakeRecord(libraryDir, projectId);
+    return {
+      labels: await loadPhaseLabels(libraryDir, projectId),
+      videoUrl: intake?.playbackFile ? `endoseg-video://video/${encodeURIComponent(projectId)}` : null,
+      durationSec: intake?.meta.durationSec ?? 0,
+      fps: intake?.meta.fps ?? 0,
+      caseName: intake ? caseNameFromSource(intake.sourcePath) : null,
+      exportRoot: phaseExportRoot(),
+    };
+  });
+
+  ipcMain.handle(IPC.phasesSave, async (_e, projectId: unknown, labels: unknown) => {
+    if (typeof projectId !== "string") return null;
+    const saved = await savePhaseLabels(libraryDir, projectId, labels);
+    // Edited labels mean the clips/frames on disk are stale until re-exported.
+    await updateStageOnDisk(libraryDir, projectId, "phases", { status: "in_progress", counts: { spans: saved.spans.length } }, nowIso());
+    return saved;
+  });
+
+  ipcMain.handle(IPC.phasesExport, async (event, projectId: unknown) => {
+    if (typeof projectId !== "string") return null;
+    if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
+    const send = (p: PhaseExportProgress) => event.sender.send(IPC.phasesProgress, p);
+    try {
+      const r = await runPhaseExport({
+        baseDir: libraryDir,
+        projectId,
+        ffmpegPath: resolveBinary(ffmpegPath),
+        exportRoot: phaseExportRoot(),
+        fps: settings.phaseFps,
+        onProgress: send,
+      });
+      return await updateStageOnDisk(
+        libraryDir,
+        projectId,
+        "phases",
+        { status: "done", counts: { clips: r.clips, frames: r.frames } },
+        nowIso(),
+      );
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      await crashLogger.record(
+        { source: "phases", message: e.message, detail: e.stack, projectId, stage: "phases" },
+        nowIso(),
+      );
+      return updateStageOnDisk(libraryDir, projectId, "phases", { status: "error", error: e.message }, nowIso());
+    }
+  });
+
+  ipcMain.handle(IPC.phasesReveal, async () => {
+    const dir = phaseExportRoot();
+    await fs.mkdir(dir, { recursive: true });
+    await shell.openPath(dir);
   });
 
   ipcMain.handle(IPC.segListFrames, async (_e, projectId: unknown) => {
@@ -328,14 +382,6 @@ function registerIpc(): void {
     try {
       await updateStageOnDisk(libraryDir, projectId, "export", { status: "in_progress" }, nowIso());
       const result = await runExport(libraryDir, projectId, send, exportRootFor(projectId));
-      await logActivity(libraryDir, {
-        at: nowIso(),
-        action: "export_completed",
-        projectId,
-        projectName: (await readManifest(libraryDir, projectId))?.name,
-        file: result.exportDir,
-        detail: `${result.frameCount} frames, ${result.labelMapCount} label maps`,
-      }, currentIdentity());
       return await updateStageOnDisk(
         libraryDir,
         projectId,
@@ -349,7 +395,6 @@ function registerIpc(): void {
         { source: "export", message: e.message, detail: e.stack, projectId, stage: "export" },
         nowIso(),
       );
-      await logActivity(libraryDir, { at: nowIso(), action: "export_failed", projectId, detail: e.message }, currentIdentity());
       return updateStageOnDisk(libraryDir, projectId, "export", { status: "error", error: e.message }, nowIso());
     }
   });
@@ -361,35 +406,10 @@ function registerIpc(): void {
     await shell.openPath(dir);
   });
 
-  ipcMain.handle(IPC.projectSetStatus, async (_e, projectId: unknown, status: unknown) => {
-    if (typeof projectId !== "string" || (status !== "ongoing" && status !== "complete")) return null;
-    const who = currentIdentity();
-    const at = nowIso();
-    const m = await updateWorkOnDisk(libraryDir, projectId, { status, statusBy: who.user, statusAt: at }, at);
-    if (m) await logActivity(libraryDir, { at, action: "status_changed", projectId, projectName: m.name, status }, who);
-    return m;
-  });
-
   ipcMain.handle(IPC.framesRemove, async (_e, projectId: unknown, frameIds: unknown): Promise<string[]> => {
     if (typeof projectId !== "string" || !Array.isArray(frameIds)) return [];
     const names = frameIds.filter((f): f is string => typeof f === "string");
-    const moved = await removeFrames(libraryDir, projectId, names);
-    if (moved.length) {
-      await logActivity(libraryDir, {
-        at: nowIso(),
-        action: "frames_removed",
-        projectId,
-        projectName: (await readManifest(libraryDir, projectId))?.name,
-        detail: `${moved.length} split-screen frame${moved.length > 1 ? "s" : ""} moved to 01_frames/removed`,
-      }, currentIdentity());
-    }
-    return moved;
-  });
-
-  ipcMain.handle(IPC.activityList, () => readActivity(libraryDir));
-  ipcMain.handle(IPC.activityOpenFolder, async () => {
-    await fs.mkdir(activityDir(libraryDir), { recursive: true });
-    await shell.openPath(activityDir(libraryDir));
+    return removeFrames(libraryDir, projectId, names);
   });
 
   ipcMain.handle(IPC.updateCheck, (): Promise<UpdateStatus> => checkForUpdates(app.isPackaged));
@@ -492,6 +512,48 @@ app.whenReady().then(async () => {
       });
     } catch (err) {
       console.error(`[seg] frame error ${req.url}:`, err instanceof Error ? err.message : err);
+      return new Response("error", { status: 500 });
+    }
+  });
+
+  // Stream the intake video over endoseg-video://video/<projectId>. Byte ranges
+  // are honoured so the <video> element can seek without reading the whole file.
+  protocol.handle("endoseg-video", async (req) => {
+    try {
+      const projectId = decodeURIComponent(new URL(req.url).pathname.split("/").filter(Boolean)[0] ?? "");
+      const intake = projectId ? await readIntakeRecord(libraryDir, projectId) : null;
+      const rel = intake?.playbackFile;
+      if (!rel || rel.includes("..")) return new Response("not found", { status: 404 });
+      const abs = path.join(projectDir(libraryDir, projectId), "00_intake", rel);
+      const size = (await fs.stat(abs)).size;
+      const ext = path.extname(abs).toLowerCase();
+      const type = ext === ".webm" ? "video/webm" : ext === ".mov" ? "video/quicktime" : "video/mp4";
+      const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.get("range") ?? "");
+      let start = 0;
+      let end = size - 1;
+      if (m) {
+        if (m[1]) {
+          start = Number(m[1]);
+          if (m[2]) end = Math.min(Number(m[2]), size - 1);
+        } else if (m[2]) {
+          start = Math.max(0, size - Number(m[2])); // suffix range: last N bytes
+        }
+        if (start > end || start >= size) {
+          return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
+        }
+      }
+      const body = Readable.toWeb(createReadStream(abs, { start, end })) as ReadableStream;
+      return new Response(body, {
+        status: m ? 206 : 200,
+        headers: {
+          "Content-Type": type,
+          "Content-Length": String(end - start + 1),
+          "Accept-Ranges": "bytes",
+          ...(m ? { "Content-Range": `bytes ${start}-${end}/${size}` } : {}),
+        },
+      });
+    } catch (err) {
+      console.error(`[phases] video error ${req.url}:`, err instanceof Error ? err.message : err);
       return new Response("error", { status: 500 });
     }
   });

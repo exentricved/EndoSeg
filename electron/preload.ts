@@ -4,6 +4,7 @@ import {
   type EndoSegApi,
   type IntakeProgress,
   type ExportProgress,
+  type PhaseExportProgress,
   type UpdateStatus,
 } from "../src/shared/ipc.js";
 
@@ -18,6 +19,7 @@ const api: EndoSegApi = {
   getProject: (id) => ipcRenderer.invoke(IPC.projectGet, id),
   revealProject: (id) => ipcRenderer.invoke(IPC.projectReveal, id),
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
+  chooseSettingDir: (key) => ipcRenderer.invoke(IPC.settingChooseDir, key),
   updateSettings: (patch) => ipcRenderer.invoke(IPC.settingsUpdate, patch),
   pickVideo: () => ipcRenderer.invoke(IPC.intakePickVideo),
   runIntake: (projectId, sourcePath) => ipcRenderer.invoke(IPC.intakeRun, projectId, sourcePath),
@@ -36,11 +38,16 @@ const api: EndoSegApi = {
     return () => ipcRenderer.removeListener(IPC.exportProgress, listener);
   },
   revealExport: (projectId) => ipcRenderer.invoke(IPC.exportReveal, projectId),
-  setProjectStatus: (projectId, status) => ipcRenderer.invoke(IPC.projectSetStatus, projectId, status),
   removeFrames: (projectId, frameIds) => ipcRenderer.invoke(IPC.framesRemove, projectId, frameIds),
-  listActivity: () => ipcRenderer.invoke(IPC.activityList),
-  openActivityFolder: () => ipcRenderer.invoke(IPC.activityOpenFolder),
-  startSession: (name) => ipcRenderer.invoke(IPC.sessionStart, name),
+  loadPhases: (projectId) => ipcRenderer.invoke(IPC.phasesLoad, projectId),
+  savePhases: (projectId, labels) => ipcRenderer.invoke(IPC.phasesSave, projectId, labels),
+  exportPhases: (projectId) => ipcRenderer.invoke(IPC.phasesExport, projectId),
+  onPhasesProgress: (cb) => {
+    const listener = (_e: IpcRendererEvent, p: PhaseExportProgress) => cb(p);
+    ipcRenderer.on(IPC.phasesProgress, listener);
+    return () => ipcRenderer.removeListener(IPC.phasesProgress, listener);
+  },
+  revealPhases: (projectId) => ipcRenderer.invoke(IPC.phasesReveal, projectId),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   onUpdateStatus: (cb) => {
     const listener = (_e: IpcRendererEvent, s: UpdateStatus) => cb(s);

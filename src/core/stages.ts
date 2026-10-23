@@ -2,11 +2,12 @@
 // Kept free of Electron/Node APIs so it can be unit-tested in isolation and
 // reused by both the main process (disk IO) and the renderer (display).
 
-export const STAGES = ["intake", "segmentation", "export"] as const;
+export const STAGES = ["intake", "phases", "segmentation", "export"] as const;
 export type StageId = (typeof STAGES)[number];
 
 export const STAGE_LABELS: Record<StageId, string> = {
   intake: "Intake",
+  phases: "Phases",
   segmentation: "Segmentation",
   export: "Export",
 };
@@ -28,23 +29,6 @@ export interface StageState {
   error?: string;
 }
 
-/** Whether a person is still working on a project or has signed it off. */
-export type WorkStatus = "ongoing" | "complete";
-
-/** Who brought the video in, which file it was, and where the work stands. */
-export interface WorkInfo {
-  status: WorkStatus;
-  /** OS account that ran intake. */
-  intakeBy?: string;
-  intakeAt?: string;
-  /** Original file name / full path of the imported video. */
-  sourceFile?: string;
-  sourcePath?: string;
-  /** Who last changed the status, and when. */
-  statusBy?: string;
-  statusAt?: string;
-}
-
 export interface ProjectManifest {
   schemaVersion: 1;
   id: string;
@@ -52,13 +36,12 @@ export interface ProjectManifest {
   createdAt: string;
   updatedAt: string;
   stages: Record<StageId, StageState>;
-  /** Absent until a video has been taken in. */
-  work?: WorkInfo;
 }
 
 function pendingStages(): Record<StageId, StageState> {
   return {
     intake: { status: "pending" },
+    phases: { status: "pending" },
     segmentation: { status: "pending" },
     export: { status: "pending" },
   };

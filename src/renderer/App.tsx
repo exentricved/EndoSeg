@@ -1,31 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
-import { STAGE_LABELS } from "../core/stages.js";
+import { STAGE_LABELS, type ProjectManifest } from "../core/stages.js";
+import { caseNameFromSource } from "../core/phases.js";
 import type { ProjectSummary } from "../core/manifest.js";
 import type { AppInfo, LibraryState } from "../shared/ipc.js";
 import { StageBar } from "./StageBar.js";
 import { CrashLogView } from "./CrashLogView.js";
-import { ActivityView } from "./ActivityView.js";
-import { SignInView } from "./SignInView.js";
 import { SettingsView } from "./SettingsView.js";
 import { ProjectDetail } from "./ProjectDetail.js";
 import { StageBadge, formatTime } from "./ui.js";
 import { SegmentationView } from "./SegmentationView.js";
+import { PhasesView } from "./PhasesView.js";
 
 type View =
   | { kind: "hub" }
   | { kind: "crashlog" }
-  | { kind: "activity" }
   | { kind: "settings" }
-  | { kind: "project"; id: string }
+  /** `intakePath`: a video picked from "New project" that intake should start on right away. */
+  | { kind: "project"; id: string; intakePath?: string }
+  | { kind: "phases"; id: string; manifest: ProjectManifest | null }
   | { kind: "annotator"; id: string };
 
 export function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [library, setLibrary] = useState<LibraryState | null>(null);
   const [view, setView] = useState<View>({ kind: "hub" });
-  const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [switchingUser, setSwitchingUser] = useState(false);
 
   const refresh = useCallback(async () => {
     setLibrary(await window.endoseg.getLibrary());
@@ -40,30 +38,26 @@ export function App() {
     void refresh();
   }, [refresh, refreshInfo]);
 
-  const submitNew = useCallback(async () => {
-    const name = newName.trim();
-    if (!name) return;
-    const { id } = await window.endoseg.createProject(name);
-    setNewName("");
-    setCreating(false);
+  /** New project = pick a video; the project is named after the case folder it sits in. */
+  const newFromVideo = useCallback(async () => {
+    const sourcePath = await window.endoseg.pickVideo();
+    if (!sourcePath) return;
+    const { id } = await window.endoseg.createProject(caseNameFromSource(sourcePath));
     await refresh();
-    setView({ kind: "project", id });
-  }, [newName, refresh]);
+    setView({ kind: "project", id, intakePath: sourcePath });
+  }, [refresh]);
 
-  // Nothing is usable until someone has entered their name and the library is writable.
   if (!info) return null;
-  if (!info.user || switchingUser) {
+
+  if (view.kind === "phases") {
+    const projectId = view.id;
     return (
-      <div className="app">
-        <SignInView
-          onSignedIn={(ai) => {
-            setInfo(ai);
-            setSwitchingUser(false);
-            setView({ kind: "hub" });
-            void refresh();
-          }}
-        />
-      </div>
+      <PhasesView
+        projectId={projectId}
+        manifest={view.manifest}
+        onBack={() => { void refresh(); setView({ kind: "project", id: projectId }); }}
+        onExported={(m) => setView({ kind: "phases", id: projectId, manifest: m })}
+      />
     );
   }
 
@@ -120,13 +114,6 @@ export function App() {
           </span>
           <span className="brand-name">EndoSeg</span>
           <span className="version">{info ? `v${info.version}` : ""}</span>
-          <button
-            className="link user-chip"
-            title="Recorded on intake, export and status changes — click to switch person"
-            onClick={() => setSwitchingUser(true)}
-          >
-            {info.user} · switch
-          </button>
         </div>
         <nav className="nav">
           <button
@@ -134,12 +121,6 @@ export function App() {
             onClick={() => setView({ kind: "hub" })}
           >
             Projects
-          </button>
-          <button
-            className={view.kind === "activity" ? "active" : ""}
-            onClick={() => setView({ kind: "activity" })}
-          >
-            Activity
           </button>
           <button
             className={view.kind === "settings" ? "active" : ""}
@@ -163,7 +144,9 @@ export function App() {
               <span className="muted">Library:</span> {library?.baseDir ?? "…"}
             </div>
             <div className="toolbar-actions">
-              <button onClick={() => setCreating(true)}>+ New project</button>
+              <button onClick={() => void newFromVideo()} disabled={library ? !library.writable : true}>
+                + New project from video…
+              </button>
               <button className="secondary" onClick={refresh}>
                 Refresh
               </button>
@@ -177,25 +160,6 @@ export function App() {
             </div>
           )}
 
-          {creating && (
-            <div className="new-project">
-              <input
-                autoFocus
-                placeholder="Case name (e.g. Case 12 — sphincterotomy)"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void submitNew();
-                  if (e.key === "Escape") setCreating(false);
-                }}
-              />
-              <button onClick={() => void submitNew()}>Create</button>
-              <button className="secondary" onClick={() => setCreating(false)}>
-                Cancel
-              </button>
-            </div>
-          )}
-
           <ProjectTable
             projects={library?.projects ?? []}
             onOpen={(id) => setView({ kind: "project", id })}
@@ -205,12 +169,15 @@ export function App() {
 
       {view.kind === "project" && (
         <ProjectDetail
+          key={view.id}
           id={view.id}
+          intakePath={view.intakePath}
           onBack={() => {
             void refresh();
             setView({ kind: "hub" });
           }}
           onOpenAnnotator={(id) => setView({ kind: "annotator", id })}
+          onOpenPhases={(id, manifest) => setView({ kind: "phases", id, manifest })}
         />
       )}
 
@@ -219,8 +186,6 @@ export function App() {
       )}
 
       {view.kind === "crashlog" && <CrashLogView />}
-
-      {view.kind === "activity" && <ActivityView />}
     </div>
   );
 }
@@ -234,7 +199,7 @@ function ProjectTable(props: {
       <div className="empty">
         <p>No projects yet.</p>
         <p className="muted">
-          Create one to start the Intake {"→"} Segmentation {"→"} Export pipeline.
+          Pick a video to start the Intake {"→"} Phases {"→"} Segmentation {"→"} Export pipeline.
         </p>
       </div>
     );
@@ -244,8 +209,6 @@ function ProjectTable(props: {
       <thead>
         <tr>
           <th>Project</th>
-          <th>Video</th>
-          <th>Status</th>
           <th>Pipeline</th>
           <th>Current stage</th>
           <th>Updated</th>
@@ -261,23 +224,6 @@ function ProjectTable(props: {
             <td>
               <div className="proj-name">{p.name}</div>
               <div className="proj-id muted">{p.id}</div>
-            </td>
-            <td>
-              {p.work?.sourceFile ? (
-                <>
-                  <div title={p.work.sourcePath}>{p.work.sourceFile}</div>
-                  <div className="proj-id muted">by {p.work.intakeBy ?? "unknown"}</div>
-                </>
-              ) : (
-                <span className="muted">—</span>
-              )}
-            </td>
-            <td>
-              {p.work ? (
-                <span className={`work-status work-${p.work.status}`}>{p.work.status}</span>
-              ) : (
-                <span className="muted">—</span>
-              )}
             </td>
             <td>
               <StageBar statuses={p.stageStatuses} />
