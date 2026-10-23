@@ -78,6 +78,8 @@ export interface SegFrame {
   height: number;
   /** Phase the frame was extracted from (absent for frames from older projects). */
   phase?: string;
+  /** Seconds into the source video (absent for frames from older projects). */
+  timeSec?: number;
 }
 
 export interface SegFramesResult {

@@ -8,6 +8,7 @@ import { deflateSync, inflateSync } from "node:zlib";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { projectDir } from "./library.js";
+import { loadFrameIndex } from "./phases.js";
 import type { ExportProgress } from "../shared/ipc.js";
 
 // ---- Class catalog (must stay in sync with SegmentationView.tsx CLASSES) ----
@@ -41,6 +42,8 @@ interface NativeSnapshot {
   frames: AnnotationFrame[];
   /** Frame ids marked as split-screen (endoscopy + fluoroscopy) — excluded from export. */
   splitScreen?: string[];
+  /** Frame ids the annotator ticked as complete. */
+  completed?: string[];
 }
 
 export interface ExportResult {
@@ -303,17 +306,21 @@ export async function runExport(
 
   // Load annotations snapshot.
   let annotatedFrames: AnnotationFrame[] = [];
+  let completed = new Set<string>();
   try {
     const raw = await fs.readFile(path.join(segDir, "annotations.leus"), "utf8");
     const snap = JSON.parse(raw) as NativeSnapshot;
     if (snap.version === 1 && Array.isArray(snap.frames)) {
       const skip = new Set(Array.isArray(snap.splitScreen) ? snap.splitScreen : []);
       annotatedFrames = snap.frames.filter((f) => !skip.has(f.frameId));
+      completed = new Set(Array.isArray(snap.completed) ? snap.completed : []);
     }
   } catch { /* no annotations yet — export will be empty */ }
 
   // Locate source frames (raw; legacy deduped projects fall back to kept).
   const framesDir = await findFrameDir(baseDir, projectId);
+  // Where each frame sits in the source video (from the Phases export).
+  const frameIndex = await loadFrameIndex(baseDir, projectId);
 
   // Create timestamped output directory.
   const exportId = makeExportId();
@@ -331,6 +338,11 @@ export async function runExport(
     image: string | null;
     labelMap: string | null;
     phase: string | null;
+    /** Seconds from the start of the source video; null for legacy every-Nth frames. */
+    timeSec: number | null;
+    /** Which span of that phase (1-based) — matches the clip's _NN. */
+    span: number | null;
+    completed: boolean;
     polygonCount: number;
     classIds: number[];
   };
@@ -379,6 +391,9 @@ export async function runExport(
       image: imageCopied ? `images/${pngName}` : null,
       labelMap: labelMapWritten ? `label_maps/${pngName}` : null,
       phase: f.phase ?? null,
+      timeSec: frameIndex[f.frameId]?.timeSec ?? null,
+      span: frameIndex[f.frameId]?.span ?? null,
+      completed: completed.has(f.frameId),
       polygonCount: polys.length,
       classIds: [...new Set(polys.map((p) => p.classId))].sort((a, b) => a - b),
     });

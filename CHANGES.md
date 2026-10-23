@@ -1,3 +1,17 @@
+# EndoSeg — v0.2.2 (2026-10-23)
+
+## Source timestamps on clips (for training)
+- Phase clips now carry where they were cut from the source video: `<case>_<phase>_NN_t<startMs>-<endMs>.mp4` (e.g. `…_cannulation-attempt_02_t00026000-00031000.mp4` = 26.0–31.0 s). Frames already carry theirs: `<case>_t<ms>_<phase>_NN.png`.
+- `01_frames/frames.json` now also lists every clip with its phase, span number and start/end seconds, plus the case name.
+- Dataset export `metadata.json` gives each frame its `timeSec` in the source video, its `span` number and whether it was ticked `completed`.
+- Re-exporting phases replaces clips with the old names (no `_t…`) as well.
+
+## Annotator
+- **Annotation complete** tick box at the top of the right panel (key **C**). Ticked frames show a green ✓ on their thumbnail in the frame list; the panel shows *N / total frames complete*. Saved with the annotations.
+- **Remove this frame…** (click **Remove it** to confirm) takes the current frame out of the annotation set — for frames that aren't significant, blurry, split-screen, etc. The file moves to `01_frames/removed/` (recoverable) and the project is saved. **Mark for removal [X]** + **Remove N marked frames…** still does several at once.
+- Removed frames stay removed when phases are re-exported.
+- The frame list now follows you: the current frame is highlighted (blue bar + outline) and scrolled to the middle of the list as you move with A/D, arrows, tracking or removal. Rows show the frame's time in the video and its phase instead of the long file name (full name on hover).
+
 # EndoSeg — v0.2.1 (2026-10-23)
 
 ## Crop at intake

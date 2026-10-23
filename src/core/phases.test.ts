@@ -73,7 +73,9 @@ describe("naming", () => {
 
   it("builds <case>_<phase> folders and numbered clips", () => {
     expect(phaseFolderName("CASE", "cannulation-success")).toBe("CASE_cannulation-success");
-    expect(phaseClipName("CASE", "cannulation-attempt", 2)).toBe("CASE_cannulation-attempt_02.mp4");
+    expect(phaseClipName("CASE", "cannulation-attempt", 2, 17.25, 24)).toBe(
+      "CASE_cannulation-attempt_02_t00017250-00024000.mp4",
+    );
   });
 
   it("names frames by time and span number, so a sorted listing is chronological", () => {

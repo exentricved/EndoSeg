@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { SegFrame } from "../shared/ipc.js";
-import { PHASES, phaseById } from "../core/phases.js";
+import { PHASES, phaseById, formatTimecode } from "../core/phases.js";
 import {
   type Gray,
   type Similarity,
@@ -57,6 +57,8 @@ interface NativeSnapshot {
   }>;
   /** Frames marked split-screen (endoscopy + fluoroscopy) — skipped by export. */
   splitScreen?: string[];
+  /** Frames the annotator ticked as fully annotated. */
+  completed?: string[];
 }
 
 // ---- Pure helpers ----
@@ -190,7 +192,12 @@ export function SegmentationView({ projectId }: { projectId: string }) {
   const splitRef                        = useRef<Set<string>>(new Set());
   const [splitCount, setSplitCount]     = useState(0);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirmRemoveOne, setConfirmRemoveOne] = useState(false);
   const [removing, setRemoving]         = useState(false);
+  // Frames ticked "annotation complete" — same ref + counter pattern as split-screen marks.
+  const completedRef                    = useRef<Set<string>>(new Set());
+  const [completedCount, setCompletedCount] = useState(0);
+  const sidebarRef                      = useRef<HTMLDivElement>(null);
 
   // Refs mirrored from state for use inside stable callbacks.
   const canvasRef       = useRef<HTMLCanvasElement>(null);
@@ -515,6 +522,10 @@ export function SegmentationView({ projectId }: { projectId: string }) {
             splitRef.current = new Set(s.splitScreen.filter((id) => typeof id === "string"));
             setSplitCount(splitRef.current.size);
           }
+          if (s.version === 1 && Array.isArray(s.completed)) {
+            completedRef.current = new Set(s.completed.filter((id) => typeof id === "string"));
+            setCompletedCount(completedRef.current.size);
+          }
           if (s.version === 1 && Array.isArray(s.frames)) {
             for (const f of s.frames) {
               if (f.frameId && Array.isArray(f.polygons) && f.polygons.length) {
@@ -594,6 +605,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
     setFrameIdx(n);
     inProgressRef.current = []; setInProgressLen(0);
     selectedPolyIdRef.current = null; setHasSelection(false);
+    setConfirmRemoveOne(false);
     const newFrame = framesRef.current[n];
     setCurrentPhase((newFrame ? (phasesRef.current.get(newFrame.frameId) ?? "") : ""));
   }, []);
@@ -643,7 +655,8 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       }
       const live = new Set(framesRef.current.map((f) => f.frameId));
       const splitScreen = [...splitRef.current].filter((id) => live.has(id));
-      const snapshot: NativeSnapshot = { version: 1, frames: frameItems, splitScreen };
+      const completed = [...completedRef.current].filter((id) => live.has(id));
+      const snapshot: NativeSnapshot = { version: 1, frames: frameItems, splitScreen, completed };
       await window.endoseg.saveSegmentation(projectId, snapshot);
       setSaveMsg("Saved");
       setTimeout(() => setSaveMsg(null), 2500);
@@ -689,6 +702,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       if (e.key === "m" || e.key === "M") { toggleMasks(); return; }
       if (e.key === "t" || e.key === "T") { void trackForwardRef.current(); return; }
       if (e.key === "x" || e.key === "X") { toggleSplitRef.current(); return; }
+      if (e.key === "c" || e.key === "C") { toggleCompletedRef.current(); return; }
       // Brush size with [ ]
       if (e.key === "[") {
         const next = Math.max(1, brushRadiusRef.current - 5);
@@ -1129,8 +1143,20 @@ export function SegmentationView({ projectId }: { projectId: string }) {
   const toggleSplitRef = useRef(toggleSplit);
   useEffect(() => { toggleSplitRef.current = toggleSplit; }, [toggleSplit]);
 
-  const removeMarked = useCallback(async () => {
-    const ids = [...splitRef.current];
+  // ---- "Annotation complete" tick ----
+  const toggleCompleted = useCallback(() => {
+    const frame = framesRef.current[frameIdxRef.current];
+    if (!frame) return;
+    const set = completedRef.current;
+    if (set.has(frame.frameId)) set.delete(frame.frameId);
+    else set.add(frame.frameId);
+    setCompletedCount(set.size);
+  }, []);
+  const toggleCompletedRef = useRef(toggleCompleted);
+  useEffect(() => { toggleCompletedRef.current = toggleCompleted; }, [toggleCompleted]);
+
+  // Take frames out of the project (split-screen, or not worth annotating).
+  const removeFrameIds = useCallback(async (ids: string[]) => {
     if (!ids.length) return;
     setRemoving(true);
     try {
@@ -1150,11 +1176,13 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         frameSizesRef.current.delete(id);
         grayCacheRef.current.delete(id);
         splitRef.current.delete(id);
+        completedRef.current.delete(id);
       }
       undoStackRef.current = undoStackRef.current.filter((e) => !("frameId" in e) || !moved.has(e.frameId));
       const after = before.filter((f) => !moved.has(f.frameId));
       setFrames_(after);
       setSplitCount(splitRef.current.size);
+      setCompletedCount(completedRef.current.size);
       const idx = Math.max(0, after.findIndex((f) => f.frameId === (moved.has(curId ?? "") ? landingId : curId)));
       navigateTo(idx);
       // Persist right away so the saved annotations never point at removed frames.
@@ -1164,8 +1192,15 @@ export function SegmentationView({ projectId }: { projectId: string }) {
     } finally {
       setRemoving(false);
       setConfirmRemove(false);
+      setConfirmRemoveOne(false);
     }
   }, [navigateTo, projectId, setFrames_]);
+  const removeMarked = useCallback(() => removeFrameIds([...splitRef.current]), [removeFrameIds]);
+
+  // Keep the current frame in view in the frame list.
+  useEffect(() => {
+    sidebarRef.current?.querySelector(`[data-idx="${frameIdx}"]`)?.scrollIntoView({ block: "center" });
+  }, [frameIdx, frames]);
 
   // ---- Auto-annotate duodenal wall by color range ----
   const autoDuodenalWall = useCallback(async () => {
@@ -1259,7 +1294,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       {/* ---- Main area ---- */}
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         {/* Frame list sidebar (left) */}
-        <div style={{ width: 200, flexShrink: 0, borderRight: "1px solid #1e2d40", overflowY: "auto", display: "flex", flexDirection: "column" }}>
+        <div ref={sidebarRef} style={{ width: 200, flexShrink: 0, borderRight: "1px solid #1e2d40", overflowY: "auto", overflowX: "hidden", display: "flex", flexDirection: "column" }}>
           {frames.length === 0 ? (
             <div style={{ padding: 12, color: "#475569", fontSize: 12, lineHeight: 1.5 }}>No frames found.<br />Run Intake first.</div>
           ) : (
@@ -1268,16 +1303,25 @@ export function SegmentationView({ projectId }: { projectId: string }) {
               const hasMasks  = (pixelMasksRef.current.get(f.frameId)?.size ?? 0) > 0;
               const framePhase = phasesRef.current.get(f.frameId);
               const isSplit = splitRef.current.has(f.frameId);
+              const isDone = completedRef.current.has(f.frameId);
               const active = i === frameIdx;
               return (
-                <button key={f.frameId} onClick={() => navigateTo(i)} style={{ display: "flex", flexDirection: "column", padding: 0, textAlign: "left", background: active ? "#1a3050" : "transparent", border: "none", borderBottom: `1px solid ${active ? "#2a4a70" : "#111a26"}`, outline: active ? "1.5px solid #3b6fa8" : "none", outlineOffset: -1, color: active ? "#e4e9f0" : "#6b7e94", cursor: "pointer", flexShrink: 0 }}>
-                  <img src={f.url} loading="lazy" style={{ width: "100%", height: 52, objectFit: "cover", borderRadius: "2px 2px 0 0", display: "block", opacity: isSplit ? 0.35 : 1 }} />
+                <button key={f.frameId} data-idx={i} title={f.name} onClick={() => navigateTo(i)} style={{ display: "flex", flexDirection: "column", width: "100%", minWidth: 0, padding: 0, textAlign: "left", background: active ? "#1d3a60" : "transparent", border: "none", borderLeft: `4px solid ${active ? "#38bdf8" : "transparent"}`, borderBottom: `1px solid ${active ? "#2a4a70" : "#111a26"}`, outline: active ? "2px solid #38bdf8" : "none", outlineOffset: -2, color: active ? "#f1f5f9" : "#6b7e94", cursor: "pointer", flexShrink: 0 }}>
+                  <div style={{ position: "relative", width: "100%" }}>
+                    <img src={f.url} loading="lazy" style={{ width: "100%", height: 52, objectFit: "cover", borderRadius: "2px 2px 0 0", display: "block", opacity: isSplit ? 0.35 : 1 }} />
+                    {isDone && (
+                      <span title="Annotation complete" style={{ position: "absolute", top: 4, right: 4, width: 18, height: 18, borderRadius: 9, background: "#16a34a", color: "#fff", fontSize: 12, fontWeight: 700, lineHeight: "18px", textAlign: "center", boxShadow: "0 0 0 2px #0d1520" }}>✓</span>
+                    )}
+                  </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 11 }}>
                     <span style={{ color: "#2d3f57", width: 30, textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
-                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {f.timeSec != null ? `${formatTimecode(f.timeSec)} · ${phaseById(f.phase ?? "")?.label ?? f.phase ?? ""}` : f.name}
+                    </span>
                     {framePhase && <span title={framePhase} style={{ color: phaseColor(framePhase), fontSize: 7, flexShrink: 0 }}>◆</span>}
                     {(hasAnns || hasMasks) && <span style={{ color: "#4ade80", fontSize: 8, flexShrink: 0 }}>●</span>}
-                    {isSplit && <span title="Split-screen — marked for removal" style={{ color: "#f87171", fontSize: 10, flexShrink: 0 }}>⊘</span>}
+                    {isSplit && <span title="Marked for removal" style={{ color: "#f87171", fontSize: 10, flexShrink: 0 }}>⊘</span>}
+                    {isDone && <span title="Annotation complete" style={{ color: "#4ade80", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>✓</span>}
                   </div>
                 </button>
               );
@@ -1298,7 +1342,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
           />
           {splitCount > 0 && frames[frameIdx] && splitRef.current.has(frames[frameIdx].frameId) && (
             <div style={{ position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)", background: "rgba(127,29,29,0.88)", color: "#fecaca", border: "1px solid #f87171", padding: "4px 12px", borderRadius: 6, fontSize: 11, pointerEvents: "none", whiteSpace: "nowrap" }}>
-              ⊘ Split-screen frame — marked for removal (X to unmark)
+              ⊘ Marked for removal (X to unmark)
             </div>
           )}
           {inProgressLen > 0 && (
@@ -1311,6 +1355,23 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         {/* Annotation panel (right sidebar — fixed, never overlaps canvas) */}
         <div style={{ width: 210, flexShrink: 0, borderLeft: "1px solid #1e2d40", overflowY: "auto", display: "flex", flexDirection: "column", background: "#0a121c" }}>
           <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
+            {/* Per-frame "done" tick */}
+            {(() => {
+              const done = !!currentFrame && completedRef.current.has(currentFrame.frameId);
+              return (
+                <label
+                  title="Tick when every structure on this frame is annotated [C]"
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, cursor: currentFrame ? "pointer" : "default", border: `1.5px solid ${done ? "#4ade80" : "#1e2d40"}`, background: done ? "rgba(74,222,128,0.12)" : "transparent", color: done ? "#bbf7d0" : "#94a3b8", fontSize: 12, fontWeight: 600 }}
+                >
+                  <input type="checkbox" checked={done} disabled={!currentFrame} onChange={toggleCompleted} style={{ width: 16, height: 16, accentColor: "#4ade80", cursor: "inherit" }} />
+                  Annotation complete [C]
+                </label>
+              );
+            })()}
+            <div style={{ fontSize: 10, color: "#475569" }}>{completedCount} / {frames.length} frames complete</div>
+
+            <PanelDivider />
+
             {/* Tool buttons — Draw section */}
             <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Draw</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
@@ -1467,15 +1528,38 @@ export function SegmentationView({ projectId }: { projectId: string }) {
 
             {/* Split-screen (endoscopy + fluoroscopy) frames */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 10, color: "#64748b" }}>Split-screen frames</span>
+              <span style={{ fontSize: 10, color: "#64748b" }}>Remove frames</span>
+              {confirmRemoveOne ? (
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    disabled={removing}
+                    onClick={() => currentFrame && void removeFrameIds([currentFrame.frameId])}
+                    style={{ flex: 1, fontSize: 11, padding: "2px 8px", background: "#450a0a", borderColor: "#f87171", color: "#fca5a5" }}
+                  >
+                    {removing ? "Removing…" : "Remove it"}
+                  </button>
+                  <button className="secondary" disabled={removing} onClick={() => setConfirmRemoveOne(false)} style={{ fontSize: 11, padding: "2px 8px" }}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  disabled={!currentFrame || removing}
+                  onClick={() => setConfirmRemoveOne(true)}
+                  style={{ fontSize: 11, padding: "2px 8px", background: "#2a0d0d", borderColor: "#7f1d1d", color: "#fca5a5" }}
+                  title="Take this frame out of the annotation set (not significant, blurry, split-screen…). Moved to 01_frames/removed, recoverable."
+                >
+                  Remove this frame…
+                </button>
+              )}
               <button
                 className="secondary"
                 disabled={!frames.length}
                 onClick={toggleSplit}
                 style={{ fontSize: 11, padding: "2px 8px" }}
-                title="Mark/unmark this frame as showing endoscopy + fluoroscopy [X]"
+                title="Mark/unmark this frame for removal (e.g. split-screen endoscopy + fluoroscopy), then remove all marked frames at once [X]"
               >
-                {frames[frameIdx] && splitRef.current.has(frames[frameIdx].frameId) ? "Unmark split-screen [X]" : "Mark split-screen [X]"}
+                {frames[frameIdx] && splitRef.current.has(frames[frameIdx].frameId) ? "Unmark [X]" : "Mark for removal [X]"}
               </button>
               {splitCount > 0 && (
                 confirmRemove ? (
@@ -1501,7 +1585,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
                   </button>
                 )
               )}
-              {confirmRemove && (
+              {(confirmRemove || confirmRemoveOne) && (
                 <span style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.4 }}>
                   Their annotations are discarded and the project is saved. Files go to 01_frames/removed.
                 </span>
@@ -1532,6 +1616,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         <div style={{ width: 1, height: 16, background: "#1e2d40", flexShrink: 0 }} />
 
         {currentFrame && <span>{currentFrame.name}</span>}
+        {currentFrame && completedRef.current.has(currentFrame.frameId) && <span style={{ color: "#4ade80" }}>✓ complete</span>}
         {currentFrame && currentFrame.width > 0 && <span style={{ color: "#2d3f57" }}>{currentFrame.width}×{currentFrame.height}</span>}
         <span>{annCount} polygon{annCount !== 1 ? "s" : ""}</span>
 
@@ -1550,7 +1635,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
         <span style={{ color: "#2d3f57" }}>{frames.length > 0 ? `${frameIdx + 1} / ${frames.length}` : "—"}</span>
 
         <div style={{ width: 1, height: 16, background: "#1e2d40", flexShrink: 0 }} />
-        <span style={{ color: "#1e2d40" }}>P=poly · B=brush · L=lasso · E=erase · S=sel · M=masks · 1–9,0=class · A/D/←→=nav · [/]=size · F=fit · Ctrl+Z=undo · Ctrl+S=save</span>
+        <span style={{ color: "#1e2d40" }}>P=poly · B=brush · L=lasso · E=erase · S=sel · M=masks · C=complete · X=mark · 1–9,0=class · A/D/←→=nav · [/]=size · F=fit · Ctrl+Z=undo · Ctrl+S=save</span>
       </div>
     </div>
   );

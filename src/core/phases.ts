@@ -92,9 +92,18 @@ export function phaseFolderName(caseName: string, phase: PhaseId): string {
   return `${caseName}_${phase}`;
 }
 
-/** <case>_<phase>_NN.mp4 — one clip per span, numbered in time order. */
-export function phaseClipName(caseName: string, phase: PhaseId, index: number): string {
-  return `${phaseFolderName(caseName, phase)}_${String(index).padStart(2, "0")}.mp4`;
+/** Milliseconds into the source video, zero-padded to 8 digits (sorts chronologically up to ~27 h). */
+export function msStamp(timeSec: number): string {
+  return String(Math.max(0, Math.round(timeSec * 1000))).padStart(8, "0");
+}
+
+/**
+ * <case>_<phase>_NN_t<startMs>-<endMs>.mp4 — one clip per span, numbered in time
+ * order, carrying where it was cut from in the source video.
+ */
+export function phaseClipName(caseName: string, phase: PhaseId, index: number, start: number, end: number): string {
+  const nn = String(index).padStart(2, "0");
+  return `${phaseFolderName(caseName, phase)}_${nn}_t${msStamp(start)}-${msStamp(end)}.mp4`;
 }
 
 /**
@@ -102,9 +111,8 @@ export function phaseClipName(caseName: string, phase: PhaseId, index: number): 
  * listing is chronological) plus the span number, matching that span's clip.
  */
 export function phaseFrameName(caseName: string, phase: PhaseId, index: number, timeSec: number): string {
-  const ms = Math.max(0, Math.round(timeSec * 1000));
   const nn = String(index).padStart(2, "0");
-  return `${safeFolderName(caseName).replace(/\s+/g, "_")}_t${String(ms).padStart(8, "0")}_${phase}_${nn}.png`;
+  return `${safeFolderName(caseName).replace(/\s+/g, "_")}_t${msStamp(timeSec)}_${phase}_${nn}.png`;
 }
 
 /** Number each span within its phase (1-based, in time order). */

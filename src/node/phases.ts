@@ -125,9 +125,19 @@ export interface RunPhaseExportOptions {
   onProgress?: (p: PhaseExportProgress) => void;
 }
 
-/** Our own clips from a previous export (other files in the folder are left alone). */
+export interface ClipIndexEntry {
+  /** Path relative to the export root: <case>_<phase>/<clip>.mp4 */
+  file: string;
+  phase: PhaseId;
+  span: number;
+  /** Seconds from the start of the source video. */
+  startSec: number;
+  endSec: number;
+}
+
+/** Our own clips from a previous export (other files in the folder are left alone). Older exports had no _t suffix. */
 function isOwnClip(file: string, folder: string): boolean {
-  return file.startsWith(`${folder}_`) && /_\d{2}\.mp4$/.test(file);
+  return file.startsWith(`${folder}_`) && /_\d{2}(_t\d{8}-\d{8})?\.mp4$/.test(file);
 }
 
 export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<PhaseExportResult> {
@@ -152,16 +162,19 @@ export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<Phase
     try { names = await fs.readdir(folderPath); } catch { /* not created yet */ }
     for (const n of names) if (isOwnClip(n, folder)) await fs.rm(path.join(folderPath, n), { force: true });
   }
-  let clips = 0;
+  const clipIndex: ClipIndexEntry[] = [];
   for (const { span, index } of numbered) {
-    opts.onProgress?.({ step: "clip", phase: span.phase, done: clips, total: numbered.length });
-    const folderPath = path.join(opts.exportRoot, phaseFolderName(caseName, span.phase));
+    opts.onProgress?.({ step: "clip", phase: span.phase, done: clipIndex.length, total: numbered.length });
+    const folder = phaseFolderName(caseName, span.phase);
+    const folderPath = path.join(opts.exportRoot, folder);
     await fs.mkdir(folderPath, { recursive: true });
-    const out = path.join(folderPath, phaseClipName(caseName, span.phase, index));
-    const res = await run(opts.ffmpegPath, buildClipArgs(source, out, span.start, span.end, crop));
+    const clipName = phaseClipName(caseName, span.phase, index, span.start, span.end);
+    const res = await run(opts.ffmpegPath, buildClipArgs(source, path.join(folderPath, clipName), span.start, span.end, crop));
     if (res.code !== 0) throw fail("clip", res);
-    clips++;
+    const round = (s: number) => Math.round(s * 1000) / 1000;
+    clipIndex.push({ file: `${folder}/${clipName}`, phase: span.phase, span: index, startSec: round(span.start), endSec: round(span.end) });
   }
+  const clips = clipIndex.length;
 
   // 2. Frames for segmentation, endoscopic phases only. raw/ is rebuilt from scratch.
   const rawDir = path.join(dir, "01_frames", "raw");
@@ -169,6 +182,9 @@ export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<Phase
   await fs.rm(rawDir, { recursive: true, force: true });
   await fs.mkdir(rawDir, { recursive: true });
   const index: Record<string, FrameIndexEntry> = {};
+  // Frames an annotator removed stay removed: names are time-based, so a re-export reproduces them exactly.
+  let removed = new Set<string>();
+  try { removed = new Set(await fs.readdir(path.join(dir, "01_frames", "removed"))); } catch { /* none removed */ }
   const frameSpans = numbered.filter(({ span }) => phaseById(span.phase)?.frames);
   for (let i = 0; i < frameSpans.length; i++) {
     const { span, index: spanIndex } = frameSpans[i]!;
@@ -184,12 +200,20 @@ export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<Phase
     for (let k = 0; k < files.length; k++) {
       const timeSec = span.start + k / opts.fps;
       const name = phaseFrameName(caseName, span.phase, spanIndex, timeSec);
+      if (removed.has(name)) continue;
       await fs.rename(path.join(tmpDir, files[k]!), path.join(rawDir, name));
       index[name] = { phase: span.phase, span: spanIndex, timeSec: Math.round(timeSec * 1000) / 1000 };
     }
   }
   await fs.rm(tmpDir, { recursive: true, force: true });
-  await writeJsonAtomic(frameIndexFile(opts.baseDir, opts.projectId), { version: 1, fps: opts.fps, crop, frames: index });
+  await writeJsonAtomic(frameIndexFile(opts.baseDir, opts.projectId), {
+    version: 1,
+    caseName,
+    fps: opts.fps,
+    crop,
+    clips: clipIndex,
+    frames: index,
+  });
 
   return { caseName, exportRoot: opts.exportRoot, clips, frames: Object.keys(index).length };
 }

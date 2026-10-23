@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { runIntake } from "./intake.js";
 import { run } from "./proc.js";
 import { savePhaseLabels, loadPhaseLabels, loadFrameIndex, runPhaseExport, saveCrop, loadCrop } from "./phases.js";
-import { listSegFrames } from "./segmentation.js";
+import { listSegFrames, removeFrames } from "./segmentation.js";
 
 const require = createRequire(import.meta.url);
 const ffmpegPath: string = require("ffmpeg-static");
@@ -61,12 +61,12 @@ describe("phase export (real ffmpeg integration)", () => {
       "CASE_01_fluoroscopy",
     ]);
     expect((await fs.readdir(path.join(out, "CASE_01_cannulation-attempt"))).sort()).toEqual([
-      "CASE_01_cannulation-attempt_01.mp4",
-      "CASE_01_cannulation-attempt_02.mp4",
+      "CASE_01_cannulation-attempt_01_t00002000-00004000.mp4",
+      "CASE_01_cannulation-attempt_02_t00005000-00006000.mp4",
     ]);
     const probe = await run(ffprobePath, [
       "-v", "quiet", "-print_format", "json", "-show_format",
-      path.join(out, "CASE_01_fluoroscopy", "CASE_01_fluoroscopy_01.mp4"),
+      path.join(out, "CASE_01_fluoroscopy", "CASE_01_fluoroscopy_01_t00006000-00009000.mp4"),
     ]);
     expect(Number(JSON.parse(probe.stdout).format.duration)).toBeCloseTo(3, 0);
 
@@ -86,11 +86,20 @@ describe("phase export (real ffmpeg integration)", () => {
       span: 2,
       timeSec: 5,
     });
+    // frames.json also indexes the clips with their source times, for training.
+    const idx = JSON.parse(await fs.readFile(path.join(base, "projects", "p", "01_frames", "frames.json"), "utf8"));
+    expect(idx.clips[1]).toEqual({
+      file: "CASE_01_cannulation-attempt/CASE_01_cannulation-attempt_01_t00002000-00004000.mp4",
+      phase: "cannulation-attempt", span: 1, startSec: 2, endSec: 4,
+    });
     // The annotator sees each frame's phase.
     const seg = await listSegFrames(base, "p");
     expect(seg.frames.map((f) => f.phase)).toEqual([
       "duodenum", "duodenum", "cannulation-attempt", "cannulation-attempt", "cannulation-attempt",
     ]);
+
+    // A frame the annotator removed stays out on re-export.
+    expect(await removeFrames(base, "p", ["CASE_01_t00003000_cannulation-attempt_01.png"])).toHaveLength(1);
 
     // Re-export after deleting a span removes its clip and frames, but not other files in the folder.
     await fs.writeFile(path.join(out, "CASE_01_cannulation-attempt", "notes.txt"), "keep me");
@@ -101,19 +110,19 @@ describe("phase export (real ffmpeg integration)", () => {
     // ...and a crop applies to both clips and frames (odd values are rounded to even).
     expect(await saveCrop(base, "p", { x: 9, y: 8, w: 41, h: 32 })).toEqual({ x: 8, y: 8, w: 40, h: 32 });
     const r2 = await runPhaseExport({ baseDir: base, projectId: "p", ffmpegPath, exportRoot: out, fps: 1 });
-    expect(r2).toMatchObject({ clips: 1, frames: 2 });
+    expect(r2).toMatchObject({ clips: 1, frames: 1 });
     const size = async (file: string) => {
       const res = await run(ffprobePath, ["-v", "quiet", "-print_format", "json", "-show_streams", file]);
       const s = JSON.parse(res.stdout).streams[0];
       return `${s.width}x${s.height}`;
     };
-    expect(await size(path.join(out, "CASE_01_cannulation-attempt", "CASE_01_cannulation-attempt_01.mp4"))).toBe("40x32");
+    expect(await size(path.join(out, "CASE_01_cannulation-attempt", "CASE_01_cannulation-attempt_01_t00002000-00004000.mp4"))).toBe("40x32");
     expect(await size(path.join(base, "projects", "p", "01_frames", "raw", "CASE_01_t00002000_cannulation-attempt_01.png"))).toBe("40x32");
     // Clearing the crop goes back to the whole picture.
     expect(await saveCrop(base, "p", null)).toBeNull();
     expect(await loadCrop(base, "p")).toBeNull();
     expect((await fs.readdir(path.join(out, "CASE_01_cannulation-attempt"))).sort()).toEqual([
-      "CASE_01_cannulation-attempt_01.mp4",
+      "CASE_01_cannulation-attempt_01_t00002000-00004000.mp4",
       "notes.txt",
     ]);
     expect(await fs.readdir(path.join(out, "CASE_01_duodenum"))).toEqual([]);

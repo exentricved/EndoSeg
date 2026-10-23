@@ -87,7 +87,7 @@ export async function listSegFrames(
             url: `endoseg-frame://frame/${encodeURIComponent(projectId)}/${source}/${encodeURIComponent(name)}`,
             width,
             height,
-            ...(index[name] ? { phase: index[name].phase } : {}),
+            ...(index[name] ? { phase: index[name].phase, timeSec: index[name].timeSec } : {}),
           };
         }),
       );
