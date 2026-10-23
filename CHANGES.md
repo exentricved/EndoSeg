@@ -1,4 +1,4 @@
-# EndoSeg Annotator — Changes (2026-10-22)
+# EndoSeg Annotator — v0.1.2 (2026-10-22)
 
 ## Start-up sign-in
 - On launch, people enter their **name** (last name used is prefilled); that name — not the Windows login — is recorded on intake, export, status changes and frame removals. **Switch** in the top bar changes person.
