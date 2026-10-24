@@ -342,6 +342,10 @@ export async function runExport(
     timeSec: number | null;
     /** Which span of that phase (1-based) — matches the clip's _NN. */
     span: number | null;
+    /** Maneuvers under way at this moment. */
+    maneuvers: string[];
+    /** Sampled from the cannulation attempt that succeeded. */
+    cannulationSuccess: boolean;
     completed: boolean;
     polygonCount: number;
     classIds: number[];
@@ -393,6 +397,8 @@ export async function runExport(
       phase: f.phase ?? null,
       timeSec: frameIndex[f.frameId]?.timeSec ?? null,
       span: frameIndex[f.frameId]?.span ?? null,
+      maneuvers: frameIndex[f.frameId]?.maneuvers ?? [],
+      cannulationSuccess: frameIndex[f.frameId]?.success === true,
       completed: completed.has(f.frameId),
       polygonCount: polys.length,
       classIds: [...new Set(polys.map((p) => p.classId))].sort((a, b) => a - b),

@@ -80,6 +80,10 @@ export interface SegFrame {
   phase?: string;
   /** Seconds into the source video (absent for frames from older projects). */
   timeSec?: number;
+  /** Maneuvers under way at this moment (ids from core/phases MANEUVERS). */
+  maneuvers?: string[];
+  /** Sampled from the cannulation attempt that succeeded. */
+  success?: boolean;
 }
 
 export interface SegFramesResult {

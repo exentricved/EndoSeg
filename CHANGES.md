@@ -1,3 +1,22 @@
+# EndoSeg — v0.2.3 (2026-10-23)
+
+## Cannulation success is a moment, not a phase
+- Press **4** at the end of the last cannulation attempt to mark success (press again, or **Move ← here**, to move it; ✕ removes it). It shows as a blue ✓ line on the timeline and is saved as `cannulationSuccess` in `00_intake/phases.json`.
+- The attempt it ends (the last one starting before it) carries **success** in its names: clip `<case>_cannulation-attempt_NN_success_t….mp4`, frames `<case>_t<ms>_cannulation-attempt_NN_success.png`. `frames.json` gives `cannulationSuccessSec`, and `success: true` on that clip and its frames; dataset `metadata.json` gives each frame `cannulationSuccess`.
+- Projects labelled with the old *Cannulation success* span convert automatically: the success moment goes at the span's start, and the span becomes **Post-cannulation**. The old `<case>_cannulation-success` folder is removed on the next export once it's empty.
+
+## Post-cannulation maneuvers (PEP-related)
+- New maneuvers: **Sphincterotomy (7)**, **Balloon dilation (8)**, **Pancreatic stent (9)**. Press the key to start, press again to end. They run independently of the phases, so they can overlap the phases and each other.
+- Each maneuver span exports a clip into `<case>_<maneuver>/`.
+- Maneuver frames go to the annotator. A moment already sampled as part of a phase is not duplicated; its frame name gets the maneuvers under way, e.g. `<case>_t00050000_post-cannulation_01_sphincterotomy_pancreatic-stent.png`. Maneuver time outside every phase gets frames of its own (`<case>_t<ms>_sphincterotomy_NN.png`). `frames.json` and `metadata.json` list `maneuvers` per frame.
+- In the annotator, frame thumbnails show maneuver tags (EST, EPBD, PS) and SUCCESS; the right panel lists them under Phase.
+
+## Annotations follow renamed frames
+- Frame names can now change when success or maneuvers are relabelled. On re-export, saved annotations, ✓ ticks, removals and masks move to the frame that now holds the same source time (`_t<ms>_`), so no work is lost. The previous `annotations.leus` is kept as `.bak`.
+
+## Keys
+- Phases: 1 Duodenum, 2 Pre-cannulation, 3 Cannulation attempt, 5 Post-cannulation, 6 Fluoroscopy. 4 = success moment. 7–9 = maneuvers.
+
 # EndoSeg — v0.2.2 (2026-10-23)
 
 ## Source timestamps on clips (for training)

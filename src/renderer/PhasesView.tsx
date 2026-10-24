@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PHASES,
+  MANEUVERS,
+  SUCCESS_KEY,
+  SUCCESS_COLOR,
   type PhaseId,
+  type ManeuverId,
+  type LabelId,
   type PhaseSpan,
-  phaseById,
+  labelById,
+  isManeuver,
+  successfulAttempt,
   sortSpans,
   numberSpans,
   formatTimecode,
@@ -15,9 +22,11 @@ import type { PhasesState, PhaseExportProgress } from "../shared/ipc.js";
 // Label procedure phases on the intake video, then export one clip per span
 // (<case>_<phase>/) and 1 fps frames of the endoscopic phases for segmentation.
 //
-// Marking: press a phase key (1–6) to start that phase at the playhead; press
-// it again to end it there. Pressing a different phase key ends the open span
-// and starts the next one, so back-to-back phases take one key press each.
+// Marking: press a phase key (1–3, 5–6) to start that phase at the playhead;
+// press it again to end it there. Pressing a different phase key ends the open
+// span and starts the next one, so back-to-back phases take one key press each.
+// Maneuvers (7–9) start and end the same way but run independently, so they can
+// overlap each other and the phases. 4 marks the moment cannulation succeeded.
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const SAVE_DELAY_MS = 600;
@@ -36,6 +45,9 @@ export function PhasesView({
   const [state, setState] = useState<PhasesState | null>(null);
   const [spans, setSpans] = useState<PhaseSpan[]>([]);
   const [open, setOpen] = useState<{ phase: PhaseId; start: number } | null>(null);
+  /** Maneuvers being recorded → where each started. */
+  const [openMan, setOpenMan] = useState<Partial<Record<ManeuverId, number>>>({});
+  const [success, setSuccess] = useState<number | undefined>(undefined);
   const [selected, setSelected] = useState<string | null>(null);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -47,8 +59,9 @@ export function PhasesView({
   const [message, setMessage] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** The spans as loaded from disk — not saved back unless they change. */
+  /** The labels as loaded from disk — not saved back unless they change. */
   const loadedSpans = useRef<PhaseSpan[] | null>(null);
+  const loadedSuccess = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,32 +69,38 @@ export function PhasesView({
       if (cancelled || !s) return;
       setState(s);
       loadedSpans.current = s.labels.spans;
+      loadedSuccess.current = s.labels.cannulationSuccess;
       setSpans(s.labels.spans);
+      setSuccess(s.labels.cannulationSuccess);
       setDuration(s.durationSec);
     });
     return () => { cancelled = true; };
   }, [projectId]);
 
-  // Autosave (debounced) whenever the spans are edited.
+  const labelsOf = (list: PhaseSpan[], cs: number | undefined) =>
+    ({ version: 1 as const, spans: list, ...(cs !== undefined ? { cannulationSuccess: cs } : {}) });
+
+  // Autosave (debounced) whenever the labels are edited.
   useEffect(() => {
-    if (!loadedSpans.current || spans === loadedSpans.current) return;
+    if (!loadedSpans.current) return;
+    if (spans === loadedSpans.current && success === loadedSuccess.current) return;
     setSaveState("pending");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       saveTimer.current = null;
-      window.endoseg.savePhases(projectId, { version: 1, spans })
+      window.endoseg.savePhases(projectId, labelsOf(spans, success))
         .then(() => setSaveState("saved"))
         .catch(() => setSaveState("error"));
     }, SAVE_DELAY_MS);
-  }, [projectId, spans]);
+  }, [projectId, spans, success]);
 
   // Flush a pending save when leaving the view.
-  const spansRef = useRef(spans);
-  spansRef.current = spans;
+  const labelsRef = useRef(labelsOf(spans, success));
+  labelsRef.current = labelsOf(spans, success);
   useEffect(() => () => {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
-      void window.endoseg.savePhases(projectId, { version: 1, spans: spansRef.current });
+      void window.endoseg.savePhases(projectId, labelsRef.current);
     }
   }, [projectId]);
 
@@ -123,6 +142,27 @@ export function PhasesView({
     setOpen({ phase, start: t });
   }, [open, closeOpen]);
 
+  /** Start a maneuver at the playhead, or end it there if it's being recorded. Other spans are untouched. */
+  const markManeuver = useCallback((m: ManeuverId) => {
+    const t = now();
+    const started = openMan[m];
+    if (started === undefined) {
+      setOpenMan((o) => ({ ...o, [m]: t }));
+      return;
+    }
+    setOpenMan((o) => { const next = { ...o }; delete next[m]; return next; });
+    const start = Math.min(started, t);
+    const end = Math.max(started, t);
+    if (end - start < 0.05) return;
+    const span = { id: uid(), phase: m, start, end };
+    setSelected(span.id);
+    setSpans((list) => sortSpans([...list, span]));
+  }, [openMan]);
+
+  const markSuccess = useCallback(() => setSuccess(now()), []);
+
+  const cancelOpen = useCallback(() => { setOpen(null); setOpenMan({}); }, []);
+
   const updateSpan = useCallback((id: string, patch: Partial<PhaseSpan>) => {
     setSpans((list) => sortSpans(list.map((s) => {
       if (s.id !== id) return s;
@@ -143,27 +183,31 @@ export function PhasesView({
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       const p = PHASES.find((ph) => ph.key === e.key);
       if (p) { e.preventDefault(); markPhase(p.id); return; }
+      const m = MANEUVERS.find((mn) => mn.key === e.key);
+      if (m) { e.preventDefault(); markManeuver(m.id); return; }
+      if (e.key === SUCCESS_KEY) { e.preventDefault(); markSuccess(); return; }
       switch (e.key) {
         case " ": e.preventDefault(); togglePlay(); break;
         case "ArrowLeft": e.preventDefault(); seek(now() - (e.shiftKey ? 10 : 1)); break;
         case "ArrowRight": e.preventDefault(); seek(now() + (e.shiftKey ? 10 : 1)); break;
         case ",": seek(now() - frameStep); break;
         case ".": seek(now() + frameStep); break;
-        case "Escape": setOpen(null); break;
+        case "Escape": cancelOpen(); break;
         case "Delete": if (selected) deleteSpan(selected); break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [markPhase, togglePlay, seek, frameStep, selected, deleteSpan]);
+  }, [markPhase, markManeuver, markSuccess, cancelOpen, togglePlay, seek, frameStep, selected, deleteSpan]);
 
   const runExport = useCallback(async () => {
     setConfirmExport(false);
     setMessage(null);
     // Make sure the latest labels are on disk before exporting from them.
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
-    await window.endoseg.savePhases(projectId, { version: 1, spans });
+    await window.endoseg.savePhases(projectId, labelsOf(spans, success));
     loadedSpans.current = spans;
+    loadedSuccess.current = success;
     setSaveState("saved");
     setExporting("starting");
     const unsub = window.endoseg.onPhasesProgress((p) => setExporting(p));
@@ -180,7 +224,7 @@ export function PhasesView({
       unsub();
       setExporting(null);
     }
-  }, [projectId, spans, onExported]);
+  }, [projectId, spans, success, onExported]);
 
   if (!state) return <div className="phases"><p className="muted" style={{ padding: 16 }}>Loading…</p></div>;
 
@@ -188,9 +232,15 @@ export function PhasesView({
   const pct = (t: number) => `${(t / len) * 100}%`;
   const hasSegmentation = manifest?.stages.segmentation.status === "done";
   const numbered = numberSpans(spans);
+  const openManeuvers = MANEUVERS.filter((m) => openMan[m.id] !== undefined);
+  const recording = !!open || openManeuvers.length > 0;
+  const winner = successfulAttempt(spans, success);
+  const color = (id: string) => labelById(id)?.color;
+  /** Top of a span's bar: phases share the top row, each maneuver has a thin row below. */
+  const laneTop = (id: LabelId) => (isManeuver(id) ? 29 + MANEUVERS.findIndex((m) => m.id === id) * 7 : 4);
   const exportLabel = exporting === "starting" ? "Starting…"
     : exporting
-      ? `${exporting.step === "clip" ? "Cutting clip" : "Extracting frames"} ${exporting.done + 1}/${exporting.total} (${phaseById(exporting.phase)?.label})`
+      ? `${exporting.step === "clip" ? "Cutting clip" : "Extracting frames"} ${exporting.done + 1}/${exporting.total} (${labelById(exporting.phase)?.label})`
       : null;
 
   return (
@@ -233,9 +283,9 @@ export function PhasesView({
               {spans.map((s) => (
                 <div
                   key={s.id}
-                  className={`seg ${s.id === selected ? "selected" : ""}`}
-                  title={`${phaseById(s.phase)?.label} ${formatTimecode(s.start)}–${formatTimecode(s.end)}`}
-                  style={{ left: pct(s.start), width: pct(s.end - s.start), background: phaseById(s.phase)?.color }}
+                  className={`seg ${isManeuver(s.phase) ? "man" : ""} ${s.id === selected ? "selected" : ""}`}
+                  title={`${labelById(s.phase)?.label} ${formatTimecode(s.start)}–${formatTimecode(s.end)}`}
+                  style={{ left: pct(s.start), width: pct(s.end - s.start), top: laneTop(s.phase), background: color(s.phase) }}
                 />
               ))}
               {open && (
@@ -244,8 +294,25 @@ export function PhasesView({
                   style={{
                     left: pct(Math.min(open.start, time)),
                     width: pct(Math.abs(time - open.start)),
-                    background: phaseById(open.phase)?.color,
+                    background: color(open.phase),
                   }}
+                />
+              )}
+              {openManeuvers.map((m) => {
+                const start = openMan[m.id]!;
+                return (
+                  <div
+                    key={m.id}
+                    className="seg man open"
+                    style={{ left: pct(Math.min(start, time)), width: pct(Math.abs(time - start)), top: laneTop(m.id), background: m.color }}
+                  />
+                );
+              })}
+              {success !== undefined && (
+                <div
+                  className="mark"
+                  title={`Cannulation success ${formatTimecode(success)}`}
+                  style={{ left: pct(success), background: SUCCESS_COLOR, ["--c" as string]: SUCCESS_COLOR }}
                 />
               )}
               <div className="head" style={{ left: pct(time) }} />
@@ -284,38 +351,86 @@ export function PhasesView({
                   <kbd>{p.key}</kbd> {open?.phase === p.id ? `End ${p.label}` : p.label}
                 </button>
               ))}
-              {open && <button className="secondary" onClick={() => setOpen(null)}>Cancel (Esc)</button>}
+              <button
+                className="phase-btn"
+                style={{ ["--c" as string]: SUCCESS_COLOR }}
+                onClick={markSuccess}
+                title="Mark the moment cannulation succeeded (end of the last attempt) at the playhead"
+              >
+                <kbd>{SUCCESS_KEY}</kbd> {success === undefined ? "Cannulation success ✓" : "Move success ✓ here"}
+              </button>
+              {recording && <button className="secondary" onClick={cancelOpen}>Cancel (Esc)</button>}
+            </div>
+            <div className="phases-buttons">
+              <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>Maneuvers</span>
+              {MANEUVERS.map((m) => {
+                const on = openMan[m.id] !== undefined;
+                return (
+                  <button
+                    key={m.id}
+                    className={`phase-btn ${on ? "active" : ""}`}
+                    style={{ ["--c" as string]: m.color }}
+                    onClick={() => markManeuver(m.id)}
+                    title={on ? "End this maneuver here" : "Start this maneuver here (may overlap other labels)"}
+                  >
+                    <kbd>{m.key}</kbd> {on ? `End ${m.label}` : m.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
           <aside className="phases-side">
             <h3>Spans ({spans.length})</h3>
             <p className="muted hint">
-              Press a phase key (1–6) to start it at the playhead, and press it again to end it. Pressing another
-              phase key ends the current one there. Space plays and pauses; ←/→ move 1 s, Shift for 10 s; , and . step one frame.
+              Press a phase key (1–3, 5–6) to start it at the playhead, and press it again to end it. Pressing another
+              phase key ends the current one there. Maneuver keys (7–9) work the same way but can overlap anything.
+              Press 4 at the end of the last cannulation attempt to mark success. Space plays and pauses; ←/→ move 1 s,
+              Shift for 10 s; , and . step one frame.
             </p>
+            <div className="span-row" style={{ ["--c" as string]: SUCCESS_COLOR }} onClick={() => success !== undefined && seek(success)}>
+              <div><strong>Cannulation success</strong></div>
+              <div className="times">
+                {success === undefined ? <span className="muted">not marked (4)</span> : formatTimecode(success)}
+              </div>
+              {success !== undefined && (
+                <div className="acts" onClick={(e) => e.stopPropagation()}>
+                  <button className="secondary" onClick={markSuccess} title="Move to playhead">Move ← here</button>
+                  <button className="secondary" onClick={() => setSuccess(undefined)} title="Remove">✕</button>
+                  <span className="muted" style={{ fontSize: 11, alignSelf: "center" }}>
+                    {winner ? `ends attempt #${numbered.find((n) => n.span === winner)?.index}` : "⚠ no attempt before it"}
+                  </span>
+                </div>
+              )}
+            </div>
             {open && (
-              <div className="span-row selected" style={{ ["--c" as string]: phaseById(open.phase)?.color }}>
-                <div><strong>{phaseById(open.phase)?.label}</strong> <span className="muted">recording…</span></div>
+              <div className="span-row selected" style={{ ["--c" as string]: color(open.phase) }}>
+                <div><strong>{labelById(open.phase)?.label}</strong> <span className="muted">recording…</span></div>
                 <div className="times">{formatTimecode(open.start)} →</div>
               </div>
             )}
+            {openManeuvers.map((m) => (
+              <div key={m.id} className="span-row selected" style={{ ["--c" as string]: m.color }}>
+                <div><strong>{m.label}</strong> <span className="muted">recording…</span></div>
+                <div className="times">{formatTimecode(openMan[m.id]!)} →</div>
+              </div>
+            ))}
             {numbered.map(({ span: s, index }) => (
               <div
                 key={s.id}
                 className={`span-row ${s.id === selected ? "selected" : ""}`}
-                style={{ ["--c" as string]: phaseById(s.phase)?.color }}
+                style={{ ["--c" as string]: color(s.phase) }}
                 onClick={() => { setSelected(s.id); seek(s.start); }}
               >
                 <div>
                   <select
                     value={s.phase}
                     onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => updateSpan(s.id, { phase: e.target.value as PhaseId })}
+                    onChange={(e) => updateSpan(s.id, { phase: e.target.value as LabelId })}
                   >
-                    {PHASES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                    {(isManeuver(s.phase) ? MANEUVERS : PHASES).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
                   </select>{" "}
-                  <span className="muted">#{index}</span>
+                  <span className="muted">#{index}{s === winner ? " · success ✓" : ""}</span>
                 </div>
                 <div className="times">
                   {formatTimecode(s.start)}–{formatTimecode(s.end)}
@@ -334,7 +449,9 @@ export function PhasesView({
               <strong>Export</strong>
               <span className="muted hint">
                 One clip per span goes to <code>{state.exportRoot}\{phaseFolderName(state.caseName ?? "case", "duodenum")}</code> and
-                the matching folders for the other phases. Every phase except fluoroscopy is also sampled into frames for segmentation.
+                the matching folders for the other phases and maneuvers. Every phase except fluoroscopy, and every maneuver, is
+                also sampled into frames for segmentation; frame names carry the maneuvers under way and "success" on the
+                attempt that succeeded.
               </span>
               <span className="muted hint">
                 {state.crop
@@ -355,8 +472,8 @@ export function PhasesView({
               ) : (
                 <button
                   onClick={() => (hasSegmentation ? setConfirmExport(true) : void runExport())}
-                  disabled={!!exporting || !spans.length || !!open}
-                  title={open ? "End the open phase first" : ""}
+                  disabled={!!exporting || !spans.length || recording}
+                  title={recording ? "End the open phase or maneuver first" : ""}
                 >
                   {exportLabel ?? "Export clips + frames"}
                 </button>

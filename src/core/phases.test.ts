@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   PHASES,
+  MANEUVERS,
+  SUCCESS_KEY,
   parsePhaseLabels,
   phaseAt,
+  maneuversAt,
+  successfulAttempt,
+  frameTimeKey,
   caseNameFromSource,
   phaseFolderName,
   phaseClipName,
@@ -21,6 +26,12 @@ describe("PHASES", () => {
     expect(PHASES.filter((p) => !p.frames).map((p) => p.id)).toEqual(["fluoroscopy"]);
     expect(new Set(PHASES.map((p) => p.key)).size).toBe(PHASES.length);
   });
+
+  it("gives phases, maneuvers and the success marker distinct keys", () => {
+    const keys = [...PHASES.map((p) => p.key), ...MANEUVERS.map((m) => m.key), SUCCESS_KEY];
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(PHASES.map((p) => p.id)).not.toContain("cannulation-success");
+  });
 });
 
 describe("parsePhaseLabels", () => {
@@ -29,7 +40,7 @@ describe("parsePhaseLabels", () => {
       spans: [
         { id: "b", phase: "cannulation-attempt", start: 20, end: 30 },
         { id: "a", phase: "duodenum", start: 0, end: 10 },
-        { id: "x", phase: "sphincterotomy", start: 0, end: 5 }, // unknown phase
+        { id: "x", phase: "papillotomy", start: 0, end: 5 }, // unknown phase
         { id: "y", phase: "duodenum", start: 5, end: 5 }, // empty
         { id: "z", phase: "duodenum", start: -1, end: 2 }, // negative
         { phase: "fluoroscopy", start: "40", end: "50" }, // numeric strings, no id
@@ -42,6 +53,29 @@ describe("parsePhaseLabels", () => {
       ["fluoroscopy", 40, 50],
     ]);
     expect(r.spans[2]!.id).toBeTruthy();
+  });
+
+  it("keeps maneuvers and the success moment", () => {
+    const r = parsePhaseLabels({
+      cannulationSuccess: 42.5,
+      spans: [{ id: "m", phase: "sphincterotomy", start: 50, end: 60 }],
+    });
+    expect(r.cannulationSuccess).toBe(42.5);
+    expect(r.spans[0]!.phase).toBe("sphincterotomy");
+  });
+
+  it("turns an old cannulation-success span into the success moment plus post-cannulation", () => {
+    const r = parsePhaseLabels({
+      spans: [
+        { id: "a", phase: "cannulation-attempt", start: 10, end: 30 },
+        { id: "s", phase: "cannulation-success", start: 30, end: 45 },
+      ],
+    });
+    expect(r.spans.map((s) => [s.id, s.phase, s.start, s.end])).toEqual([
+      ["a", "cannulation-attempt", 10, 30],
+      ["s", "post-cannulation", 30, 45],
+    ]);
+    expect(r.cannulationSuccess).toBe(30);
   });
 
   it("is empty for junk", () => {
@@ -64,6 +98,35 @@ describe("phaseAt", () => {
   });
 });
 
+describe("maneuvers and success", () => {
+  const spans = parsePhaseLabels({
+    spans: [
+      { id: "a1", phase: "cannulation-attempt", start: 10, end: 20 },
+      { id: "a2", phase: "cannulation-attempt", start: 25, end: 30 },
+      { id: "pc", phase: "post-cannulation", start: 30, end: 90 },
+      { id: "m1", phase: "sphincterotomy", start: 40, end: 50 },
+      { id: "m2", phase: "pancreatic-stent", start: 45, end: 60 },
+    ],
+  }).spans;
+
+  it("lists the maneuvers under way, allowing overlap", () => {
+    expect(maneuversAt(spans, 47)).toEqual(["sphincterotomy", "pancreatic-stent"]);
+    expect(maneuversAt(spans, 55)).toEqual(["pancreatic-stent"]);
+    expect(maneuversAt(spans, 70)).toEqual([]);
+  });
+
+  it("ignores maneuvers when finding the phase", () => {
+    expect(phaseAt(spans, 47)?.id).toBe("pc");
+  });
+
+  it("credits success to the last attempt starting before it", () => {
+    expect(successfulAttempt(spans, 30)?.id).toBe("a2");
+    expect(successfulAttempt(spans, 22)?.id).toBe("a1");
+    expect(successfulAttempt(spans, 5)).toBeUndefined();
+    expect(successfulAttempt(spans, undefined)).toBeUndefined();
+  });
+});
+
 describe("naming", () => {
   it("names the case after the folder the video was in", () => {
     expect(caseNameFromSource("R:\\nas\\Raw ERCP Videos\\CASE_2026_01_02\\video.mp4")).toBe("CASE_2026_01_02");
@@ -72,7 +135,7 @@ describe("naming", () => {
   });
 
   it("builds <case>_<phase> folders and numbered clips", () => {
-    expect(phaseFolderName("CASE", "cannulation-success")).toBe("CASE_cannulation-success");
+    expect(phaseFolderName("CASE", "sphincterotomy")).toBe("CASE_sphincterotomy");
     expect(phaseClipName("CASE", "cannulation-attempt", 2, 17.25, 24)).toBe(
       "CASE_cannulation-attempt_02_t00017250-00024000.mp4",
     );
@@ -84,6 +147,17 @@ describe("naming", () => {
     expect(a).toBe("CASE_t00009500_cannulation-attempt_02.png");
     expect([b, a].sort()).toEqual([a, b]);
     expect(phaseFrameName("CASE A", "duodenum", 1, 0)).toBe("CASE_A_t00000000_duodenum_01.png");
+  });
+
+  it("adds success and maneuvers to names, keeping the time key", () => {
+    expect(phaseClipName("CASE", "cannulation-attempt", 3, 25, 30, { success: true })).toBe(
+      "CASE_cannulation-attempt_03_success_t00025000-00030000.mp4",
+    );
+    const f = phaseFrameName("CASE", "post-cannulation", 1, 47, { maneuvers: ["sphincterotomy", "pancreatic-stent"] });
+    expect(f).toBe("CASE_t00047000_post-cannulation_01_sphincterotomy_pancreatic-stent.png");
+    expect(frameTimeKey(f)).toBe("00047000");
+    expect(frameTimeKey("CASE_t00047000_post-cannulation_01.png")).toBe("00047000");
+    expect(frameTimeKey("frame_000123.png")).toBeNull();
   });
 
   it("strips characters Windows can't put in a folder name", () => {

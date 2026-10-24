@@ -183,10 +183,16 @@ tr.attention { background: rgba(239, 68, 68, 0.08); }
 .phases-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 10px; gap: 8px; }
 .phases-video { flex: 1; min-height: 0; width: 100%; background: #000; border-radius: 6px; }
 .phases-timeline {
-  position: relative; height: 34px; background: var(--panel); border: 1px solid var(--border);
+  position: relative; height: 54px; background: var(--panel); border: 1px solid var(--border);
   border-radius: 6px; cursor: pointer; flex-shrink: 0; overflow: hidden;
 }
-.phases-timeline .seg { position: absolute; top: 4px; bottom: 4px; border-radius: 3px; opacity: .85; }
+.phases-timeline .seg { position: absolute; top: 4px; height: 22px; border-radius: 3px; opacity: .85; }
+/* Maneuvers sit below the phases, one thin row each, so overlaps stay visible. */
+.phases-timeline .seg.man { height: 6px; border-radius: 2px; }
+.phases-timeline .mark { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px; pointer-events: none; }
+.phases-timeline .mark::after {
+  content: "✓"; position: absolute; top: 2px; left: 4px; font-size: 11px; font-weight: 700; color: var(--c);
+}
 .phases-timeline .seg.selected { outline: 2px solid var(--text); opacity: 1; }
 .phases-timeline .seg.open { opacity: .5; background-image: repeating-linear-gradient(45deg, transparent 0 4px, rgba(0,0,0,.35) 4px 8px); }
 .phases-timeline .head { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; pointer-events: none; }

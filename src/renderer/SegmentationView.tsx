@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { SegFrame } from "../shared/ipc.js";
-import { PHASES, phaseById, formatTimecode } from "../core/phases.js";
+import { PHASES, MANEUVERS, labelById, maneuverById, formatTimecode, SUCCESS_COLOR } from "../core/phases.js";
 import {
   type Gray,
   type Similarity,
@@ -531,7 +531,8 @@ export function SegmentationView({ projectId }: { projectId: string }) {
               if (f.frameId && Array.isArray(f.polygons) && f.polygons.length) {
                 annsRef.current.set(f.frameId, [...f.polygons]);
               }
-              if (f.frameId && f.phase) {
+              // Cannulation success is no longer a phase; older snapshots may still carry it.
+              if (f.frameId && f.phase && f.phase !== "cannulation-success") {
                 phasesRef.current.set(f.frameId, f.phase);
               }
               // Restore pixel masks from saved data URLs.
@@ -1309,6 +1310,15 @@ export function SegmentationView({ projectId }: { projectId: string }) {
                 <button key={f.frameId} data-idx={i} title={f.name} onClick={() => navigateTo(i)} style={{ display: "flex", flexDirection: "column", width: "100%", minWidth: 0, padding: 0, textAlign: "left", background: active ? "#1d3a60" : "transparent", border: "none", borderLeft: `4px solid ${active ? "#38bdf8" : "transparent"}`, borderBottom: `1px solid ${active ? "#2a4a70" : "#111a26"}`, outline: active ? "2px solid #38bdf8" : "none", outlineOffset: -2, color: active ? "#f1f5f9" : "#6b7e94", cursor: "pointer", flexShrink: 0 }}>
                   <div style={{ position: "relative", width: "100%" }}>
                     <img src={f.url} loading="lazy" style={{ width: "100%", height: 52, objectFit: "cover", borderRadius: "2px 2px 0 0", display: "block", opacity: isSplit ? 0.35 : 1 }} />
+                    {(f.success || !!f.maneuvers?.length) && (
+                      <div style={{ position: "absolute", left: 3, bottom: 3, display: "flex", gap: 2, flexWrap: "wrap" }}>
+                        {f.success && <span title="Successful cannulation attempt" style={{ ...tagStyle, background: SUCCESS_COLOR }}>SUCCESS</span>}
+                        {f.maneuvers?.map((m) => {
+                          const def = maneuverById(m);
+                          return <span key={m} title={def?.label ?? m} style={{ ...tagStyle, background: def?.color ?? "#475569" }}>{def?.abbr ?? m}</span>;
+                        })}
+                      </div>
+                    )}
                     {isDone && (
                       <span title="Annotation complete" style={{ position: "absolute", top: 4, right: 4, width: 18, height: 18, borderRadius: 9, background: "#16a34a", color: "#fff", fontSize: 12, fontWeight: 700, lineHeight: "18px", textAlign: "center", boxShadow: "0 0 0 2px #0d1520" }}>✓</span>
                     )}
@@ -1316,7 +1326,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 11 }}>
                     <span style={{ color: "#2d3f57", width: 30, textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
                     <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {f.timeSec != null ? `${formatTimecode(f.timeSec)} · ${phaseById(f.phase ?? "")?.label ?? f.phase ?? ""}` : f.name}
+                      {f.timeSec != null ? `${formatTimecode(f.timeSec)} · ${labelById(f.phase ?? "")?.label ?? f.phase ?? ""}` : f.name}
                     </span>
                     {framePhase && <span title={framePhase} style={{ color: phaseColor(framePhase), fontSize: 7, flexShrink: 0 }}>◆</span>}
                     {(hasAnns || hasMasks) && <span style={{ color: "#4ade80", fontSize: 8, flexShrink: 0 }}>●</span>}
@@ -1460,8 +1470,21 @@ export function SegmentationView({ projectId }: { projectId: string }) {
             <select value={currentPhase} onChange={(e) => setPhase_(e.target.value)} style={{ fontSize: 11, padding: "3px 6px", background: "#0d1a2a", color: currentPhase ? "#e4e9f0" : "#475569", border: "1px solid #1e2d40", borderRadius: 4, cursor: "pointer", width: "100%" }}>
               <option value="">— phase —</option>
               {PHASES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-              {currentPhase && !phaseById(currentPhase) && <option value={currentPhase}>{currentPhase}</option>}
+              <optgroup label="Maneuver (outside a phase)">
+                {MANEUVERS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </optgroup>
+              {currentPhase && !labelById(currentPhase) && <option value={currentPhase}>{currentPhase}</option>}
             </select>
+            {(frames[frameIdx]?.success || !!frames[frameIdx]?.maneuvers?.length) && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 5 }}>
+                {frames[frameIdx]?.success && <span style={{ ...tagStyle, background: SUCCESS_COLOR, fontSize: 10 }}>Successful attempt</span>}
+                {frames[frameIdx]?.maneuvers?.map((m) => (
+                  <span key={m} style={{ ...tagStyle, background: maneuverById(m)?.color ?? "#475569", fontSize: 10 }}>
+                    {maneuverById(m)?.label ?? m}
+                  </span>
+                ))}
+              </div>
+            )}
 
             <PanelDivider />
 
@@ -1680,6 +1703,11 @@ function ToolBtn({ active, onClick, icon, label, title, danger }: { active: bool
   );
 }
 
+/** Small label on a frame for its maneuvers / successful attempt. */
+const tagStyle: React.CSSProperties = {
+  color: "#0b1220", fontSize: 8, fontWeight: 700, lineHeight: "12px", padding: "0 3px", borderRadius: 3,
+};
+
 function phaseColor(phase: string): string {
-  return phaseById(phase)?.color ?? "#475569";
+  return labelById(phase)?.color ?? "#475569";
 }

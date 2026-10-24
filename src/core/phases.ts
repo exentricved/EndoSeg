@@ -6,22 +6,53 @@ export const PHASES = [
   { id: "duodenum",            label: "Duodenum",            color: "#4ade80", key: "1", frames: true },
   { id: "pre-cannulation",     label: "Pre-cannulation",     color: "#94a3b8", key: "2", frames: true },
   { id: "cannulation-attempt", label: "Cannulation attempt", color: "#f59e0b", key: "3", frames: true },
-  { id: "cannulation-success", label: "Cannulation success", color: "#3b82f6", key: "4", frames: true },
   { id: "post-cannulation",    label: "Post-cannulation",    color: "#a78bfa", key: "5", frames: true },
   { id: "fluoroscopy",         label: "Fluoroscopy",         color: "#f43f5e", key: "6", frames: false },
 ] as const;
 
+/**
+ * Post-cannulation maneuvers (PEP-related). Unlike phases they may overlap each
+ * other and the phase spans; their frames go to the annotator too.
+ */
+export const MANEUVERS = [
+  { id: "sphincterotomy",   label: "Sphincterotomy",   abbr: "EST",  color: "#ef4444", key: "7", frames: true },
+  { id: "balloon-dilation", label: "Balloon dilation", abbr: "EPBD", color: "#22d3ee", key: "8", frames: true },
+  { id: "pancreatic-stent", label: "Pancreatic stent", abbr: "PS",   color: "#e879f9", key: "9", frames: true },
+] as const;
+
+/** Cannulation success is a single moment (end of the last attempt), marked with this key. */
+export const SUCCESS_KEY = "4";
+export const SUCCESS_COLOR = "#3b82f6";
+
 export type PhaseId = (typeof PHASES)[number]["id"];
 export type PhaseDef = (typeof PHASES)[number];
+export type ManeuverId = (typeof MANEUVERS)[number]["id"];
+/** What a span is labelled with: a phase or a maneuver. */
+export type LabelId = PhaseId | ManeuverId;
+export type LabelDef = PhaseDef | (typeof MANEUVERS)[number];
 
 export function phaseById(id: string): PhaseDef | undefined {
   return PHASES.find((p) => p.id === id);
 }
 
+export function maneuverById(id: string): (typeof MANEUVERS)[number] | undefined {
+  return MANEUVERS.find((m) => m.id === id);
+}
+
+/** A phase or maneuver by id. */
+export function labelById(id: string): LabelDef | undefined {
+  return phaseById(id) ?? maneuverById(id);
+}
+
+export function isManeuver(id: string): id is ManeuverId {
+  return !!maneuverById(id);
+}
+
 /** One labelled stretch of the video, in seconds from the start. */
 export interface PhaseSpan {
   id: string;
-  phase: PhaseId;
+  /** Phase or maneuver id. */
+  phase: LabelId;
   start: number;
   end: number;
 }
@@ -29,40 +60,74 @@ export interface PhaseSpan {
 export interface PhaseLabels {
   version: 1;
   spans: PhaseSpan[];
+  /** Moment cannulation succeeded (end of the last attempt), seconds from the start. */
+  cannulationSuccess?: number;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** Validate untrusted phases.json; malformed spans are dropped, the rest sorted by start. */
+/**
+ * Validate untrusted phases.json; malformed spans are dropped, the rest sorted by start.
+ * Older files labelled cannulation success as a span: its start becomes the success
+ * moment and the span itself post-cannulation, so its frames stay labelled.
+ */
 export function parsePhaseLabels(raw: unknown): PhaseLabels {
   const spans: PhaseSpan[] = [];
+  let success: number | undefined;
+  if (isObject(raw) && raw.cannulationSuccess != null) {
+    const cs = Number(raw.cannulationSuccess);
+    if (Number.isFinite(cs) && cs >= 0) success = cs;
+  }
   if (isObject(raw) && Array.isArray(raw.spans)) {
+    const legacySuccess: number[] = [];
     for (const s of raw.spans) {
-      if (!isObject(s) || !phaseById(String(s.phase))) continue;
+      if (!isObject(s)) continue;
       const start = Number(s.start);
       const end = Number(s.end);
       if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) continue;
+      const legacy = s.phase === "cannulation-success";
+      if (legacy) legacySuccess.push(start);
+      else if (!labelById(String(s.phase))) continue;
       spans.push({
         id: typeof s.id === "string" && s.id ? s.id : `span-${spans.length + 1}`,
-        phase: s.phase as PhaseId,
+        phase: legacy ? "post-cannulation" : (s.phase as LabelId),
         start,
         end,
       });
     }
+    if (success === undefined && legacySuccess.length) success = Math.min(...legacySuccess);
   }
-  return { version: 1, spans: sortSpans(spans) };
+  return { version: 1, spans: sortSpans(spans), ...(success !== undefined ? { cannulationSuccess: success } : {}) };
 }
 
 export function sortSpans(spans: PhaseSpan[]): PhaseSpan[] {
   return [...spans].sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
-/** The phase covering time `t`, preferring the latest-starting span when spans overlap. */
+/** The phase covering time `t`, preferring the latest-starting span when spans overlap. Maneuvers are ignored. */
 export function phaseAt(spans: PhaseSpan[], t: number): PhaseSpan | undefined {
   let hit: PhaseSpan | undefined;
-  for (const s of spans) if (t >= s.start && t < s.end && (!hit || s.start >= hit.start)) hit = s;
+  for (const s of spans) {
+    if (isManeuver(s.phase)) continue;
+    if (t >= s.start && t < s.end && (!hit || s.start >= hit.start)) hit = s;
+  }
+  return hit;
+}
+
+/** Maneuvers under way at time `t`, in catalog order. */
+export function maneuversAt(spans: PhaseSpan[], t: number): ManeuverId[] {
+  return MANEUVERS.filter((m) => spans.some((s) => s.phase === m.id && t >= s.start && t < s.end)).map((m) => m.id);
+}
+
+/** The attempt that succeeded: the last cannulation attempt starting at or before the success moment. */
+export function successfulAttempt(spans: PhaseSpan[], success: number | undefined): PhaseSpan | undefined {
+  if (success === undefined) return undefined;
+  let hit: PhaseSpan | undefined;
+  for (const s of spans) {
+    if (s.phase === "cannulation-attempt" && s.start <= success && (!hit || s.start >= hit.start)) hit = s;
+  }
   return hit;
 }
 
@@ -87,8 +152,8 @@ export function caseNameFromSource(sourcePath: string): string {
   return safeFolderName(file.replace(/\.[^.]+$/, ""));
 }
 
-/** <case>_<phase> — the export folder for one phase. */
-export function phaseFolderName(caseName: string, phase: PhaseId): string {
+/** <case>_<phase> — the export folder for one phase or maneuver. */
+export function phaseFolderName(caseName: string, phase: string): string {
   return `${caseName}_${phase}`;
 }
 
@@ -97,22 +162,39 @@ export function msStamp(timeSec: number): string {
   return String(Math.max(0, Math.round(timeSec * 1000))).padStart(8, "0");
 }
 
-/**
- * <case>_<phase>_NN_t<startMs>-<endMs>.mp4 — one clip per span, numbered in time
- * order, carrying where it was cut from in the source video.
- */
-export function phaseClipName(caseName: string, phase: PhaseId, index: number, start: number, end: number): string {
-  const nn = String(index).padStart(2, "0");
-  return `${phaseFolderName(caseName, phase)}_${nn}_t${msStamp(start)}-${msStamp(end)}.mp4`;
+/** Extra name parts: "success" on the attempt that succeeded, then the maneuvers under way. */
+export interface NameTags {
+  success?: boolean;
+  maneuvers?: readonly string[];
+}
+
+function tagSuffix(tags?: NameTags): string {
+  return [...(tags?.success ? ["success"] : []), ...(tags?.maneuvers ?? [])].map((x) => `_${x}`).join("");
 }
 
 /**
- * <case>_t<ms>_<phase>_NN.png — named by time in the source (so a sorted
- * listing is chronological) plus the span number, matching that span's clip.
+ * <case>_<phase>_NN[_success]_t<startMs>-<endMs>.mp4 — one clip per span,
+ * numbered in time order, carrying where it was cut from in the source video.
  */
-export function phaseFrameName(caseName: string, phase: PhaseId, index: number, timeSec: number): string {
+export function phaseClipName(caseName: string, phase: string, index: number, start: number, end: number, tags?: NameTags): string {
   const nn = String(index).padStart(2, "0");
-  return `${safeFolderName(caseName).replace(/\s+/g, "_")}_t${msStamp(timeSec)}_${phase}_${nn}.png`;
+  return `${phaseFolderName(caseName, phase)}_${nn}${tagSuffix(tags)}_t${msStamp(start)}-${msStamp(end)}.mp4`;
+}
+
+/**
+ * <case>_t<ms>_<phase>_NN[_success][_<maneuver>…].png — named by time in the
+ * source (so a sorted listing is chronological) plus the span number, matching
+ * that span's clip, then whether it's the successful attempt and any maneuvers
+ * under way at that moment.
+ */
+export function phaseFrameName(caseName: string, phase: string, index: number, timeSec: number, tags?: NameTags): string {
+  const nn = String(index).padStart(2, "0");
+  return `${safeFolderName(caseName).replace(/\s+/g, "_")}_t${msStamp(timeSec)}_${phase}_${nn}${tagSuffix(tags)}.png`;
+}
+
+/** The _t<ms> part of a frame name, which stays put when the tags after it change. */
+export function frameTimeKey(name: string): string | null {
+  return /_t(\d{8})_/.exec(name)?.[1] ?? null;
 }
 
 /** Number each span within its phase (1-based, in time order). */

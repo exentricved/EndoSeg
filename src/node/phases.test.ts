@@ -128,6 +128,77 @@ describe("phase export (real ffmpeg integration)", () => {
     expect(await fs.readdir(path.join(out, "CASE_01_duodenum"))).toEqual([]);
   }, 120000);
 
+  it("tags frames with maneuvers and the successful attempt, keeping annotations when names change", async () => {
+    const caseDir = path.join(base, "Raw", "CASE_01");
+    await fs.mkdir(caseDir, { recursive: true });
+    const src = path.join(caseDir, "video.avi");
+    const gen = await run(ffmpegPath, [
+      "-hide_banner", "-f", "lavfi", "-i", "testsrc=duration=10:size=64x64:rate=30",
+      "-c:v", "mjpeg", "-q:v", "5", "-pix_fmt", "yuvj420p", "-y", src,
+    ]);
+    expect(gen.code).toBe(0);
+    await runIntake({ baseDir: base, projectId: "p", sourcePath: src, ffmpegPath, ffprobePath, now: "x" });
+    const spans = [
+      { id: "a", phase: "cannulation-attempt", start: 0, end: 3 },
+      { id: "b", phase: "post-cannulation", start: 3, end: 6 },
+      { id: "m", phase: "sphincterotomy", start: 4, end: 5 }, // inside post-cannulation
+      { id: "n", phase: "pancreatic-stent", start: 7, end: 9 }, // outside every phase
+    ];
+    await savePhaseLabels(base, "p", { version: 1, spans });
+    await runPhaseExport({ baseDir: base, projectId: "p", ffmpegPath, exportRoot: out, fps: 1 });
+
+    // Annotate a frame of the attempt before success is marked.
+    const proj = path.join(base, "projects", "p");
+    const before = "CASE_01_t00001000_cannulation-attempt_01.png";
+    expect(await fs.readdir(path.join(proj, "01_frames", "raw"))).toContain(before);
+    await fs.mkdir(path.join(proj, "02_segmentation", "masks"), { recursive: true });
+    await fs.writeFile(path.join(proj, "02_segmentation", "annotations.leus"), JSON.stringify({
+      version: 1,
+      frames: [{ frameId: before, name: before.slice(0, -4), polygons: [{ id: "x", classId: 1, points: [] }], phase: "cannulation-attempt" }],
+      completed: [before],
+    }));
+    await fs.writeFile(path.join(proj, "02_segmentation", "masks", `${before.slice(0, -4)}__class1.png`), "png");
+
+    // Mark success at the end of the attempt and export again.
+    await savePhaseLabels(base, "p", { version: 1, spans, cannulationSuccess: 3 });
+    const r = await runPhaseExport({ baseDir: base, projectId: "p", ffmpegPath, exportRoot: out, fps: 1 });
+    expect(r.clips).toBe(4);
+    expect(await fs.readdir(path.join(out, "CASE_01_cannulation-attempt"))).toEqual([
+      "CASE_01_cannulation-attempt_01_success_t00000000-00003000.mp4",
+    ]);
+    expect(await fs.readdir(path.join(out, "CASE_01_sphincterotomy"))).toEqual([
+      "CASE_01_sphincterotomy_01_t00004000-00005000.mp4",
+    ]);
+    // Each moment is sampled once: the sphincterotomy's second is already a post-cannulation frame.
+    expect((await fs.readdir(path.join(proj, "01_frames", "raw"))).sort()).toEqual([
+      "CASE_01_t00000000_cannulation-attempt_01_success.png",
+      "CASE_01_t00001000_cannulation-attempt_01_success.png",
+      "CASE_01_t00002000_cannulation-attempt_01_success.png",
+      "CASE_01_t00003000_post-cannulation_01.png",
+      "CASE_01_t00004000_post-cannulation_01_sphincterotomy.png",
+      "CASE_01_t00005000_post-cannulation_01.png",
+      "CASE_01_t00007000_pancreatic-stent_01.png",
+      "CASE_01_t00008000_pancreatic-stent_01.png",
+    ]);
+    const idx = await loadFrameIndex(base, "p");
+    expect(idx["CASE_01_t00004000_post-cannulation_01_sphincterotomy.png"]).toEqual({
+      phase: "post-cannulation", span: 1, timeSec: 4, maneuvers: ["sphincterotomy"],
+    });
+    expect(idx["CASE_01_t00001000_cannulation-attempt_01_success.png"]?.success).toBe(true);
+    const seg = await listSegFrames(base, "p");
+    expect(seg.frames.find((f) => f.timeSec === 7)).toMatchObject({ phase: "pancreatic-stent" });
+    expect(seg.frames.find((f) => f.timeSec === 4)?.maneuvers).toEqual(["sphincterotomy"]);
+    const json = JSON.parse(await fs.readFile(path.join(proj, "01_frames", "frames.json"), "utf8"));
+    expect(json.cannulationSuccessSec).toBe(3);
+
+    // The annotation, its tick and its mask followed the renamed frame.
+    const after = "CASE_01_t00001000_cannulation-attempt_01_success.png";
+    const snap = JSON.parse(await fs.readFile(path.join(proj, "02_segmentation", "annotations.leus"), "utf8"));
+    expect(snap.frames[0]).toMatchObject({ frameId: after, name: after.slice(0, -4) });
+    expect(snap.completed).toEqual([after]);
+    expect(await fs.readdir(path.join(proj, "02_segmentation", "masks"))).toEqual([`${after.slice(0, -4)}__class1.png`]);
+  }, 120000);
+
   it("refuses to export without a video or without labels", async () => {
     await expect(runPhaseExport({ baseDir: base, projectId: "none", ffmpegPath, exportRoot: out, fps: 1 }))
       .rejects.toThrow(/No video/);
