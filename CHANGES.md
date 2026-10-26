@@ -1,3 +1,9 @@
+# EndoSeg — unreleased
+
+## Fluoroscopic PD maneuvers
+- New maneuvers on the Phases stage: **Fluoroscopy PD guidewire pass (G)** and **Fluoroscopy PD injection (I)**. They start and end like the other maneuvers and can overlap anything.
+- Each span exports a clip into `<case>_fluoro-pd-guidewire/` or `<case>_fluoro-pd-injection/`. Like the fluoroscopy phase, they are not sampled into frames for segmentation. Endoscopic frames taken while one is under way still carry it in their name and in `maneuvers`.
+
 # EndoSeg — v0.2.3 (2026-10-23)
 
 ## Cannulation success is a moment, not a phase

@@ -32,6 +32,10 @@ describe("PHASES", () => {
     expect(new Set(keys).size).toBe(keys.length);
     expect(PHASES.map((p) => p.id)).not.toContain("cannulation-success");
   });
+
+  it("exports the fluoroscopic maneuvers as clips only", () => {
+    expect(MANEUVERS.filter((m) => !m.frames).map((m) => m.id)).toEqual(["fluoro-pd-guidewire", "fluoro-pd-injection"]);
+  });
 });
 
 describe("parsePhaseLabels", () => {

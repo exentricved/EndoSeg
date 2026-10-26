@@ -12,12 +12,15 @@ export const PHASES = [
 
 /**
  * Post-cannulation maneuvers (PEP-related). Unlike phases they may overlap each
- * other and the phase spans; their frames go to the annotator too.
+ * other and the phase spans; their frames go to the annotator too, except the
+ * fluoroscopic ones, which (like the fluoroscopy phase) export clips only.
  */
 export const MANEUVERS = [
   { id: "sphincterotomy",   label: "Sphincterotomy",   abbr: "EST",  color: "#ef4444", key: "7", frames: true },
   { id: "balloon-dilation", label: "Balloon dilation", abbr: "EPBD", color: "#22d3ee", key: "8", frames: true },
   { id: "pancreatic-stent", label: "Pancreatic stent", abbr: "PS",   color: "#e879f9", key: "9", frames: true },
+  { id: "fluoro-pd-guidewire", label: "Fluoroscopy PD guidewire pass", abbr: "PDGW", color: "#facc15", key: "g", frames: false },
+  { id: "fluoro-pd-injection", label: "Fluoroscopy PD injection",      abbr: "PDI",  color: "#fb923c", key: "i", frames: false },
 ] as const;
 
 /** Cannulation success is a single moment (end of the last attempt), marked with this key. */

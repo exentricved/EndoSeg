@@ -1471,7 +1471,7 @@ export function SegmentationView({ projectId }: { projectId: string }) {
               <option value="">— phase —</option>
               {PHASES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
               <optgroup label="Maneuver (outside a phase)">
-                {MANEUVERS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                {MANEUVERS.filter((m) => m.frames).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
               </optgroup>
               {currentPhase && !labelById(currentPhase) && <option value={currentPhase}>{currentPhase}</option>}
             </select>

@@ -25,7 +25,7 @@ import type { PhasesState, PhaseExportProgress } from "../shared/ipc.js";
 // Marking: press a phase key (1–3, 5–6) to start that phase at the playhead;
 // press it again to end it there. Pressing a different phase key ends the open
 // span and starts the next one, so back-to-back phases take one key press each.
-// Maneuvers (7–9) start and end the same way but run independently, so they can
+// Maneuvers (7–9, G, I) start and end the same way but run independently, so they can
 // overlap each other and the phases. 4 marks the moment cannulation succeeded.
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -183,7 +183,7 @@ export function PhasesView({
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       const p = PHASES.find((ph) => ph.key === e.key);
       if (p) { e.preventDefault(); markPhase(p.id); return; }
-      const m = MANEUVERS.find((mn) => mn.key === e.key);
+      const m = MANEUVERS.find((mn) => mn.key === e.key.toLowerCase());
       if (m) { e.preventDefault(); markManeuver(m.id); return; }
       if (e.key === SUCCESS_KEY) { e.preventDefault(); markSuccess(); return; }
       switch (e.key) {
@@ -373,7 +373,7 @@ export function PhasesView({
                     onClick={() => markManeuver(m.id)}
                     title={on ? "End this maneuver here" : "Start this maneuver here (may overlap other labels)"}
                   >
-                    <kbd>{m.key}</kbd> {on ? `End ${m.label}` : m.label}
+                    <kbd>{m.key.toUpperCase()}</kbd> {on ? `End ${m.label}` : m.label}
                   </button>
                 );
               })}
@@ -384,7 +384,7 @@ export function PhasesView({
             <h3>Spans ({spans.length})</h3>
             <p className="muted hint">
               Press a phase key (1–3, 5–6) to start it at the playhead, and press it again to end it. Pressing another
-              phase key ends the current one there. Maneuver keys (7–9) work the same way but can overlap anything.
+              phase key ends the current one there. Maneuver keys (7–9, G, I) work the same way but can overlap anything.
               Press 4 at the end of the last cannulation attempt to mark success. Space plays and pauses; ←/→ move 1 s,
               Shift for 10 s; , and . step one frame.
             </p>
@@ -449,7 +449,7 @@ export function PhasesView({
               <strong>Export</strong>
               <span className="muted hint">
                 One clip per span goes to <code>{state.exportRoot}\{phaseFolderName(state.caseName ?? "case", "duodenum")}</code> and
-                the matching folders for the other phases and maneuvers. Every phase except fluoroscopy, and every maneuver, is
+                the matching folders for the other phases and maneuvers. Every phase and maneuver except the fluoroscopic ones is
                 also sampled into frames for segmentation; frame names carry the maneuvers under way and "success" on the
                 attempt that succeeded.
               </span>
