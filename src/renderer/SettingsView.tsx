@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Settings, GpuMode } from "../node/settings.js";
 import type { AppInfo, UpdateStatus } from "../shared/ipc.js";
+import { NAS_FOLDERS, DEFAULT_NAS_ROOT } from "../core/workspaces.js";
 
 export function SettingsView({ onChanged }: { onChanged: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const [libraryDir, setLibraryDir] = useState<string>("");
   const [saved, setSaved] = useState(false);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const unsub = useRef<(() => void) | null>(null);
@@ -14,7 +14,6 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
     setSettings(await window.endoseg.getSettings());
     const ai = await window.endoseg.appInfo();
     setInfo(ai);
-    setLibraryDir(ai.libraryDir);
   }, []);
 
   useEffect(() => {
@@ -39,14 +38,13 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
     [onChanged],
   );
 
-  const chooseDir = useCallback(async () => {
-    const state = await window.endoseg.chooseLibraryDir();
-    if (state) {
-      setLibraryDir(state.baseDir);
-      void load();
+  const chooseNasRoot = useCallback(async () => {
+    const next = await window.endoseg.chooseNasRoot();
+    if (next) {
+      setSettings(next);
       onChanged();
     }
-  }, [load, onChanged]);
+  }, [onChanged]);
 
   const chooseExportDir = useCallback(async () => {
     const next = await window.endoseg.chooseExportDir();
@@ -56,11 +54,6 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
     }
   }, [onChanged]);
 
-  const chooseSettingDir = useCallback(async (key: "rawVideosDir" | "phaseExportDir") => {
-    const next = await window.endoseg.chooseSettingDir(key);
-    if (next) setSettings(next);
-  }, []);
-
   if (!settings) return <main className="settings"><p className="muted">Loading…</p></main>;
 
   return (
@@ -69,20 +62,18 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
 
       <section className="setting-row">
         <div className="setting-label">
-          <strong>Library folder</strong>
-          <p className="muted">Where all project folders are stored.</p>
+          <strong>NAS folder</strong>
+          <p className="muted">
+            The shared folder everyone works in. It holds <code>{NAS_FOLDERS.raw}</code> (source videos, never changed),{" "}
+            <code>{NAS_FOLDERS.a1}</code> (first pass) and <code>{NAS_FOLDERS.a2}</code> (second review). Every case,
+            with its video, phases, frames, clips and masks, lives in one folder there.
+          </p>
         </div>
         <div className="setting-control">
-          <code className="path">{libraryDir}</code>
-          <button className="secondary" onClick={chooseDir}>Change…</button>
-          {settings.libraryDir && (
-            <button
-              className="secondary"
-              onClick={async () => {
-                await patch({ libraryDir: null });
-                void load();
-              }}
-            >
+          <code className="path">{settings.nasRoot ?? DEFAULT_NAS_ROOT}</code>
+          <button className="secondary" onClick={() => void chooseNasRoot()}>Change…</button>
+          {settings.nasRoot && (
+            <button className="secondary" onClick={() => void patch({ nasRoot: null })}>
               Reset to default
             </button>
           )}
@@ -102,38 +93,6 @@ export function SettingsView({ onChanged }: { onChanged: () => void }) {
           <button className="secondary" onClick={chooseExportDir}>Change…</button>
           {settings.exportDir && (
             <button className="secondary" onClick={() => void patch({ exportDir: null })}>
-              Reset to default
-            </button>
-          )}
-        </div>
-      </section>
-
-      <section className="setting-row">
-        <div className="setting-label">
-          <strong>Raw videos folder</strong>
-          <p className="muted">Where the video picker opens.</p>
-        </div>
-        <div className="setting-control">
-          <code className="path">{settings.rawVideosDir ?? "R:\\akshin-ercp-nas\\Raw ERCP Videos (when R: is mapped)"}</code>
-          <button className="secondary" onClick={() => void chooseSettingDir("rawVideosDir")}>Change…</button>
-          {settings.rawVideosDir && (
-            <button className="secondary" onClick={() => void patch({ rawVideosDir: null })}>
-              Reset to default
-            </button>
-          )}
-        </div>
-      </section>
-
-      <section className="setting-row">
-        <div className="setting-label">
-          <strong>Phase clips folder</strong>
-          <p className="muted">Each phase span is exported as a clip into {"<case>_<phase>"} folders here.</p>
-        </div>
-        <div className="setting-control">
-          <code className="path">{settings.phaseExportDir ?? "R:\\akshin-ercp-nas\\Annotated Videos (when R: is mapped, else Documents)"}</code>
-          <button className="secondary" onClick={() => void chooseSettingDir("phaseExportDir")}>Change…</button>
-          {settings.phaseExportDir && (
-            <button className="secondary" onClick={() => void patch({ phaseExportDir: null })}>
               Reset to default
             </button>
           )}

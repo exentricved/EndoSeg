@@ -7,7 +7,8 @@ import { path as ffprobePathRaw } from "ffprobe-static";
 import {
   IPC,
   type AppInfo,
-  type LibraryState,
+  type WorkspacesState,
+  type StartFromRawResult,
   type IntakeProgress,
   type ExportProgress,
   type PhaseExportProgress,
@@ -15,7 +16,8 @@ import {
   type UpdateStatus,
 } from "../src/shared/ipc.js";
 import {
-  createProjectOnDisk,
+  claimProjectOnDisk,
+  AlreadyExistsError,
   listProjects,
   readManifest,
   updateStageOnDisk,
@@ -24,6 +26,17 @@ import {
   deleteProjectOnDisk,
   type LibraryCheck,
 } from "../src/node/library.js";
+import { listRawCases, isInside } from "../src/node/raw.js";
+import {
+  NAS_FOLDERS,
+  DEFAULT_NAS_ROOT,
+  WORKSPACES,
+  isSafeCaseId,
+  parseRef,
+  makeRef,
+  rawRows,
+  type WorkspaceId,
+} from "../src/core/workspaces.js";
 import { runIntake } from "../src/node/intake.js";
 import {
   loadPhaseLabels,
@@ -33,7 +46,7 @@ import {
   loadCrop,
   saveCrop,
 } from "../src/node/phases.js";
-import { caseNameFromSource } from "../src/core/phases.js";
+import { caseNameFromSource, safeFolderName } from "../src/core/phases.js";
 import {
   listSegFrames,
   loadSegmentationSnapshot,
@@ -73,61 +86,88 @@ let mainWindow: BrowserWindow | null = null;
 let frameServeCount = 0;
 let crashLogger: CrashLogger;
 let settings: Settings;
-let libraryDir = "";
-let libraryCheck: LibraryCheck = { writable: false };
+let nasCheck: LibraryCheck = { writable: false };
 
-// ── Settings + library location ──────────────────────────────────────────────
+// ── Settings + NAS folders ───────────────────────────────────────────────────
 
 function settingsPath(): string {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
-// Shared library on the team's SAFE Desktop NAS. Used as the default whenever
-// that drive is mapped; otherwise fall back to Documents.
-const SHARED_LIBRARY_ROOT = "R:\\akshin-ercp-nas";
-
-/** <NAS>\<name> when the NAS is mapped, else Documents\<fallback>. */
-function onSharedDrive(name: string, fallback: string): string {
-  if (process.platform === "win32" && existsSync(SHARED_LIBRARY_ROOT)) {
-    return path.join(SHARED_LIBRARY_ROOT, name);
-  }
-  return path.join(app.getPath("documents"), fallback);
-}
-
-function defaultLibraryDir(): string {
-  return onSharedDrive("EndoSeg Library", "EndoSeg Library");
+/** The shared NAS folder holding Raw ERCP Videos, Annotated 1 and Annotated 2. */
+function nasRoot(): string {
+  return settings.nasRoot ?? DEFAULT_NAS_ROOT;
 }
 
 function rawVideosDir(): string {
-  return settings.rawVideosDir ?? onSharedDrive("Raw ERCP Videos", "");
+  return path.join(nasRoot(), NAS_FOLDERS.raw);
 }
 
-/** Root the <case>_<phase> clip folders are written to. */
-function phaseExportRoot(): string {
-  return settings.phaseExportDir ?? onSharedDrive("Annotated Videos", "EndoSeg Annotated Videos");
+function workspaceDir(ws: WorkspaceId): string {
+  return path.join(nasRoot(), NAS_FOLDERS[ws]);
 }
 
-/** Resolve the effective library dir from settings (null → default). */
-function resolveLibraryDir(): string {
-  return settings.libraryDir ?? defaultLibraryDir();
+/**
+ * Re-checked on every hub refresh, because the NAS can drop and reconnect.
+ * The root itself is never created: a missing root means the drive isn't
+ * mapped (or the setting is wrong), and writing to C: instead would split the
+ * team's data.
+ */
+async function checkNas(): Promise<LibraryCheck> {
+  if (!existsSync(nasRoot())) {
+    nasCheck = { writable: false, error: `Cannot reach ${nasRoot()}: folder or drive not found — is the NAS drive connected?` };
+    return nasCheck;
+  }
+  for (const ws of WORKSPACES) {
+    const c = await checkLibrary(workspaceDir(ws));
+    if (!c.writable) {
+      nasCheck = c;
+      return c;
+    }
+  }
+  nasCheck = { writable: true };
+  return nasCheck;
+}
+
+interface Resolved {
+  ws: WorkspaceId;
+  /** The workspace folder (Annotated 1 or 2): the baseDir for library/phases/segmentation calls. */
+  baseDir: string;
+  id: string;
+  ref: string;
+}
+
+/** Resolve an untrusted "<ws>:<case>" reference from the renderer. */
+function resolveRef(ref: unknown): Resolved | null {
+  const r = parseRef(ref);
+  return r ? { ws: r.ws, baseDir: workspaceDir(r.ws), id: r.id, ref: makeRef(r.ws, r.id) } : null;
+}
+
+/** Clips live inside the case folder: <case>\clips\<case>_<phase>\. */
+function clipsRootFor(p: Resolved): string {
+  return path.join(projectDir(p.baseDir, p.id), "clips");
 }
 
 /** Where a project's exports go: custom root (per-project subfolder) or 03_export. */
-function exportRootFor(projectId: string): string {
+function exportRootFor(p: Resolved): string {
   return settings.exportDir
-    ? path.join(settings.exportDir, projectId)
-    : path.join(libraryDir, "projects", projectId, "03_export");
+    ? path.join(settings.exportDir, p.id)
+    : path.join(projectDir(p.baseDir, p.id), "03_export");
 }
 
-async function ensureLibrary(dir: string): Promise<void> {
-  libraryCheck = await checkLibrary(dir);
-}
-
-async function libraryState(): Promise<LibraryState> {
+async function workspacesState(): Promise<WorkspacesState> {
+  const ok = nasCheck.writable;
+  const [raw, a1, a2] = ok
+    ? await Promise.all([listRawCases(rawVideosDir()), listProjects(workspaceDir("a1")), listProjects(workspaceDir("a2"))])
+    : [[], [], []];
   return {
-    baseDir: libraryDir,
-    projects: libraryCheck.writable ? await listProjects(libraryDir) : [],
-    ...libraryCheck,
+    nasRoot: nasRoot(),
+    folders: { raw: rawVideosDir(), a1: workspaceDir("a1"), a2: workspaceDir("a2") },
+    rawFound: ok && existsSync(rawVideosDir()),
+    raw: rawRows(raw, a1, a2),
+    a1,
+    a2,
+    ...nasCheck,
   };
 }
 
@@ -177,35 +217,52 @@ function appInfo(): AppInfo {
     version: app.getVersion(),
     platform: process.platform,
     electron: process.versions.electron,
-    libraryDir,
+    nasRoot: nasRoot(),
   };
 }
 
 function registerIpc(): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => appInfo());
 
-  ipcMain.handle(IPC.libraryGet, async () => {
-    await ensureLibrary(libraryDir); // re-check: the NAS may have (re)connected
-    return libraryState();
+  ipcMain.handle(IPC.workspacesGet, async () => {
+    await checkNas(); // re-check: the NAS may have (re)connected
+    return workspacesState();
   });
 
-  ipcMain.handle(IPC.libraryCreate, async (_e, name: unknown) => {
-    const clean = typeof name === "string" && name.trim() ? name.trim() : "Untitled";
-    const { id } = await createProjectOnDisk(libraryDir, clean, nowIso());
-    return { id };
+  // Raw tab → Start intake: claim the case folder in Annotated 1 (atomic, so two
+  // people can't both start it), then the renderer runs intake on the video.
+  ipcMain.handle(IPC.rawStart, async (_e, videoPath: unknown): Promise<StartFromRawResult> => {
+    if (typeof videoPath !== "string" || !isInside(rawVideosDir(), videoPath) || !existsSync(videoPath)) {
+      return { ok: false, error: "That video is not in the Raw ERCP Videos folder any more. Refresh and try again." };
+    }
+    const looseAtRoot = path.dirname(path.resolve(videoPath)) === path.resolve(rawVideosDir());
+    const caseId = looseAtRoot
+      ? safeFolderName(path.basename(videoPath).replace(/\.[^.]+$/, ""))
+      : caseNameFromSource(videoPath);
+    if (!isSafeCaseId(caseId)) {
+      return { ok: false, error: `The folder name "${caseId}" can't be used as a case name (it starts with "_" or "."). Rename it in Raw ERCP Videos first.` };
+    }
+    try {
+      await claimProjectOnDisk(workspaceDir("a1"), caseId, caseId, nowIso());
+      return { ok: true, ref: makeRef("a1", caseId) };
+    } catch (err) {
+      if (err instanceof AlreadyExistsError) return { ok: false, error: err.message, ref: makeRef("a1", caseId) };
+      const e = err instanceof Error ? err : new Error(String(err));
+      await crashLogger.record({ source: "intake", message: e.message, detail: e.stack, stage: "intake" }, nowIso());
+      return { ok: false, error: e.message };
+    }
   });
 
-  ipcMain.handle(IPC.libraryChooseDir, async (): Promise<LibraryState | null> => {
+  ipcMain.handle(IPC.nasChooseRoot, async (): Promise<Settings | null> => {
     const res = await dialog.showOpenDialog(mainWindow!, {
-      title: "Choose EndoSeg library folder",
-      properties: ["openDirectory", "createDirectory"],
+      title: "Choose the NAS folder (the one holding Raw ERCP Videos)",
+      properties: ["openDirectory"],
     });
     if (res.canceled || !res.filePaths[0]) return null;
-    settings = applySettings(settings, { libraryDir: res.filePaths[0] });
+    settings = applySettings(settings, { nasRoot: res.filePaths[0] });
     await saveSettings(settingsPath(), settings);
-    libraryDir = resolveLibraryDir();
-    await ensureLibrary(libraryDir);
-    return libraryState();
+    await checkNas();
+    return settings;
   });
 
   ipcMain.handle(IPC.exportChooseDir, async (): Promise<Settings | null> => {
@@ -219,39 +276,27 @@ function registerIpc(): void {
     return settings;
   });
 
-  ipcMain.handle(IPC.projectGet, (_e, id: unknown) =>
-    typeof id === "string" ? readManifest(libraryDir, id) : null,
-  );
-
-  ipcMain.handle(IPC.projectReveal, async (_e, id: unknown) => {
-    if (typeof id !== "string") return;
-    shell.showItemInFolder(path.join(libraryDir, "projects", id, "project.json"));
+  ipcMain.handle(IPC.projectGet, (_e, ref: unknown) => {
+    const p = resolveRef(ref);
+    return p ? readManifest(p.baseDir, p.id) : null;
   });
 
-  ipcMain.handle(IPC.projectDelete, async (_e, id: unknown): Promise<boolean> => {
-    if (typeof id !== "string") return false;
-    return (await deleteProjectOnDisk(libraryDir, id, nowIso())) !== null;
+  ipcMain.handle(IPC.projectReveal, async (_e, ref: unknown) => {
+    const p = resolveRef(ref);
+    if (p) shell.showItemInFolder(path.join(projectDir(p.baseDir, p.id), "project.json"));
+  });
+
+  ipcMain.handle(IPC.projectDelete, async (_e, ref: unknown): Promise<boolean> => {
+    const p = resolveRef(ref);
+    return p ? (await deleteProjectOnDisk(p.baseDir, p.id, nowIso())) !== null : false;
   });
 
   ipcMain.handle(IPC.settingsGet, (): Settings => settings);
 
-  ipcMain.handle(IPC.settingChooseDir, async (_e, key: unknown): Promise<Settings | null> => {
-    if (key !== "rawVideosDir" && key !== "phaseExportDir") return null;
-    const res = await dialog.showOpenDialog(mainWindow!, {
-      title: key === "rawVideosDir" ? "Choose raw videos folder" : "Choose phase export folder",
-      properties: ["openDirectory", "createDirectory"],
-    });
-    if (res.canceled || !res.filePaths[0]) return null;
-    settings = applySettings(settings, { [key]: res.filePaths[0] });
-    await saveSettings(settingsPath(), settings);
-    return settings;
-  });
-
   ipcMain.handle(IPC.settingsUpdate, async (_e, patch: unknown): Promise<Settings> => {
     settings = applySettings(settings, patch);
     await saveSettings(settingsPath(), settings);
-    libraryDir = resolveLibraryDir();
-    await ensureLibrary(libraryDir);
+    await checkNas();
     return settings;
   });
 
@@ -268,14 +313,16 @@ function registerIpc(): void {
     return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
   });
 
-  ipcMain.handle(IPC.intakeRun, async (_e, projectId: unknown, sourcePath: unknown) => {
-    if (typeof projectId !== "string" || typeof sourcePath !== "string") return null;
+  ipcMain.handle(IPC.intakeRun, async (_e, ref: unknown, sourcePath: unknown) => {
+    const p = resolveRef(ref);
+    if (!p || typeof sourcePath !== "string") return null;
+    const { baseDir, id: projectId } = p;
     if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
     const send = (p: IntakeProgress) => mainWindow?.webContents.send(IPC.intakeProgress, p);
     try {
-      await updateStageOnDisk(libraryDir, projectId, "intake", { status: "in_progress" }, nowIso());
+      await updateStageOnDisk(baseDir, projectId, "intake", { status: "in_progress" }, nowIso());
       const record = await runIntake({
-        baseDir: libraryDir,
+        baseDir: baseDir,
         projectId,
         sourcePath,
         ffmpegPath: resolveBinary(ffmpegPath),
@@ -284,7 +331,7 @@ function registerIpc(): void {
         onProgress: send,
       });
       return await updateStageOnDisk(
-        libraryDir,
+        baseDir,
         projectId,
         "intake",
         { status: "done", counts: { sources: 1, minutes: Math.round(record.meta.durationSec / 6) / 10 } },
@@ -296,49 +343,55 @@ function registerIpc(): void {
         { source: "intake", message: e.message, detail: e.stack, projectId, stage: "intake" },
         nowIso(),
       );
-      return updateStageOnDisk(libraryDir, projectId, "intake", { status: "error", error: e.message }, nowIso());
+      return updateStageOnDisk(baseDir, projectId, "intake", { status: "error", error: e.message }, nowIso());
     }
   });
 
-  ipcMain.handle(IPC.phasesLoad, async (_e, projectId: unknown): Promise<PhasesState | null> => {
-    if (typeof projectId !== "string") return null;
-    const intake = await readIntakeRecord(libraryDir, projectId);
+  ipcMain.handle(IPC.phasesLoad, async (_e, ref: unknown): Promise<PhasesState | null> => {
+    const p = resolveRef(ref);
+    if (!p) return null;
+    const { baseDir, id: projectId } = p;
+    const intake = await readIntakeRecord(baseDir, projectId);
     return {
-      labels: await loadPhaseLabels(libraryDir, projectId),
-      videoUrl: intake?.playbackFile ? `endoseg-video://video/${encodeURIComponent(projectId)}` : null,
+      labels: await loadPhaseLabels(baseDir, projectId),
+      videoUrl: intake?.playbackFile ? `endoseg-video://video/${encodeURIComponent(p.ref)}` : null,
       durationSec: intake?.meta.durationSec ?? 0,
       fps: intake?.meta.fps ?? 0,
       width: intake?.meta.width ?? 0,
       height: intake?.meta.height ?? 0,
-      crop: await loadCrop(libraryDir, projectId, intake),
+      crop: await loadCrop(baseDir, projectId, intake),
       caseName: intake ? caseNameFromSource(intake.sourcePath) : null,
-      exportRoot: phaseExportRoot(),
+      exportRoot: clipsRootFor(p),
     };
   });
 
-  ipcMain.handle(IPC.phasesSave, async (_e, projectId: unknown, labels: unknown) => {
-    if (typeof projectId !== "string") return null;
-    const saved = await savePhaseLabels(libraryDir, projectId, labels);
+  ipcMain.handle(IPC.phasesSave, async (_e, ref: unknown, labels: unknown) => {
+    const p = resolveRef(ref);
+    if (!p) return null;
+    const { baseDir, id: projectId } = p;
+    const saved = await savePhaseLabels(baseDir, projectId, labels);
     // Edited labels mean the clips/frames on disk are stale until re-exported.
-    await updateStageOnDisk(libraryDir, projectId, "phases", { status: "in_progress", counts: { spans: saved.spans.length } }, nowIso());
+    await updateStageOnDisk(baseDir, projectId, "phases", { status: "in_progress", counts: { spans: saved.spans.length } }, nowIso());
     return saved;
   });
 
-  ipcMain.handle(IPC.phasesExport, async (event, projectId: unknown) => {
-    if (typeof projectId !== "string") return null;
+  ipcMain.handle(IPC.phasesExport, async (event, ref: unknown) => {
+    const p = resolveRef(ref);
+    if (!p) return null;
+    const { baseDir, id: projectId } = p;
     if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
     const send = (p: PhaseExportProgress) => event.sender.send(IPC.phasesProgress, p);
     try {
       const r = await runPhaseExport({
-        baseDir: libraryDir,
+        baseDir: baseDir,
         projectId,
         ffmpegPath: resolveBinary(ffmpegPath),
-        exportRoot: phaseExportRoot(),
+        exportRoot: clipsRootFor(p),
         fps: settings.phaseFps,
         onProgress: send,
       });
       return await updateStageOnDisk(
-        libraryDir,
+        baseDir,
         projectId,
         "phases",
         { status: "done", counts: { clips: r.clips, frames: r.frames } },
@@ -350,44 +403,52 @@ function registerIpc(): void {
         { source: "phases", message: e.message, detail: e.stack, projectId, stage: "phases" },
         nowIso(),
       );
-      return updateStageOnDisk(libraryDir, projectId, "phases", { status: "error", error: e.message }, nowIso());
+      return updateStageOnDisk(baseDir, projectId, "phases", { status: "error", error: e.message }, nowIso());
     }
   });
 
-  ipcMain.handle(IPC.cropSave, async (_e, projectId: unknown, crop: unknown) => {
-    if (typeof projectId !== "string") return null;
-    const saved = await saveCrop(libraryDir, projectId, crop);
+  ipcMain.handle(IPC.cropSave, async (_e, ref: unknown, crop: unknown) => {
+    const p = resolveRef(ref);
+    if (!p) return null;
+    const { baseDir, id: projectId } = p;
+    const saved = await saveCrop(baseDir, projectId, crop);
     // Clips/frames already exported used the old crop — flag the stage for re-export.
-    const m = await readManifest(libraryDir, projectId);
+    const m = await readManifest(baseDir, projectId);
     if (m?.stages.phases.status === "done") {
-      await updateStageOnDisk(libraryDir, projectId, "phases", { status: "in_progress" }, nowIso());
+      await updateStageOnDisk(baseDir, projectId, "phases", { status: "in_progress" }, nowIso());
     }
     return saved;
   });
 
-  ipcMain.handle(IPC.phasesReveal, async () => {
-    const dir = phaseExportRoot();
+  ipcMain.handle(IPC.phasesReveal, async (_e, ref: unknown) => {
+    const p = resolveRef(ref);
+    if (!p) return;
+    const dir = clipsRootFor(p);
     await fs.mkdir(dir, { recursive: true });
     await shell.openPath(dir);
   });
 
-  ipcMain.handle(IPC.segListFrames, async (_e, projectId: unknown) => {
-    if (typeof projectId !== "string") return { source: "none", frames: [] };
-    const r = await listSegFrames(libraryDir, projectId);
-    console.log(`[seg] listFrames project=${projectId} source=${r.source} count=${r.frames.length}`);
+  ipcMain.handle(IPC.segListFrames, async (_e, ref: unknown) => {
+    const p = resolveRef(ref);
+    if (!p) return { source: "none", frames: [] };
+    const r = await listSegFrames(p.baseDir, p.id, p.ref);
+    console.log(`[seg] listFrames ws=${p.ws} source=${r.source} count=${r.frames.length}`);
     return r;
   });
 
-  ipcMain.handle(IPC.segLoad, (_e, projectId: unknown) =>
-    typeof projectId === "string" ? loadSegmentationSnapshot(libraryDir, projectId) : null,
-  );
+  ipcMain.handle(IPC.segLoad, (_e, ref: unknown) => {
+    const p = resolveRef(ref);
+    return p ? loadSegmentationSnapshot(p.baseDir, p.id) : null;
+  });
 
-  ipcMain.handle(IPC.segSave, async (_e, projectId: unknown, snapshot: unknown) => {
-    if (typeof projectId !== "string") return null;
+  ipcMain.handle(IPC.segSave, async (_e, ref: unknown, snapshot: unknown) => {
+    const p = resolveRef(ref);
+    if (!p) return null;
+    const { baseDir, id: projectId } = p;
     try {
-      const { frameCount, maskCount } = await saveSegmentationSnapshot(libraryDir, projectId, snapshot);
+      const { frameCount, maskCount } = await saveSegmentationSnapshot(baseDir, projectId, snapshot);
       return await updateStageOnDisk(
-        libraryDir,
+        baseDir,
         projectId,
         "segmentation",
         { status: "done", counts: { frames: frameCount, masks: maskCount } },
@@ -399,18 +460,20 @@ function registerIpc(): void {
         { source: "segmentation", message: e.message, detail: e.stack, projectId, stage: "segmentation" },
         nowIso(),
       );
-      return updateStageOnDisk(libraryDir, projectId, "segmentation", { status: "error", error: e.message }, nowIso());
+      return updateStageOnDisk(baseDir, projectId, "segmentation", { status: "error", error: e.message }, nowIso());
     }
   });
 
-  ipcMain.handle(IPC.exportRun, async (event, projectId: unknown) => {
-    if (typeof projectId !== "string") return null;
+  ipcMain.handle(IPC.exportRun, async (event, ref: unknown) => {
+    const p = resolveRef(ref);
+    if (!p) return null;
+    const { baseDir, id: projectId } = p;
     const send = (p: ExportProgress) => event.sender.send(IPC.exportProgress, p);
     try {
-      await updateStageOnDisk(libraryDir, projectId, "export", { status: "in_progress" }, nowIso());
-      const result = await runExport(libraryDir, projectId, send, exportRootFor(projectId));
+      await updateStageOnDisk(baseDir, projectId, "export", { status: "in_progress" }, nowIso());
+      const result = await runExport(baseDir, projectId, send, exportRootFor(p));
       return await updateStageOnDisk(
-        libraryDir,
+        baseDir,
         projectId,
         "export",
         { status: "done", counts: { frames: result.frameCount, labelMaps: result.labelMapCount } },
@@ -422,21 +485,23 @@ function registerIpc(): void {
         { source: "export", message: e.message, detail: e.stack, projectId, stage: "export" },
         nowIso(),
       );
-      return updateStageOnDisk(libraryDir, projectId, "export", { status: "error", error: e.message }, nowIso());
+      return updateStageOnDisk(baseDir, projectId, "export", { status: "error", error: e.message }, nowIso());
     }
   });
 
-  ipcMain.handle(IPC.exportReveal, async (_e, projectId: unknown) => {
-    if (typeof projectId !== "string") return;
-    const dir = exportRootFor(projectId);
+  ipcMain.handle(IPC.exportReveal, async (_e, ref: unknown) => {
+    const p = resolveRef(ref);
+    if (!p) return;
+    const dir = exportRootFor(p);
     await fs.mkdir(dir, { recursive: true });
     await shell.openPath(dir);
   });
 
-  ipcMain.handle(IPC.framesRemove, async (_e, projectId: unknown, frameIds: unknown): Promise<string[]> => {
-    if (typeof projectId !== "string" || !Array.isArray(frameIds)) return [];
+  ipcMain.handle(IPC.framesRemove, async (_e, ref: unknown, frameIds: unknown): Promise<string[]> => {
+    const p = resolveRef(ref);
+    if (!p || !Array.isArray(frameIds)) return [];
     const names = frameIds.filter((f): f is string => typeof f === "string");
-    return removeFrames(libraryDir, projectId, names);
+    return removeFrames(p.baseDir, p.id, names);
   });
 
   ipcMain.handle(IPC.updateCheck, (): Promise<UpdateStatus> => checkForUpdates(app.isPackaged));
@@ -478,7 +543,7 @@ function createWindow(): void {
   // Headless smoke test: boot, confirm the renderer loaded, then quit.
   if (process.env.ENDOSEG_SMOKE) {
     mainWindow.webContents.once("did-finish-load", () => {
-      console.log("ENDOSEG_SMOKE_OK renderer-loaded library=" + libraryDir);
+      console.log("ENDOSEG_SMOKE_OK renderer-loaded nas=" + nasRoot() + " writable=" + nasCheck.writable);
       app.quit();
     });
     mainWindow.webContents.once("did-fail-load", (_e, code, desc) => {
@@ -515,16 +580,16 @@ app.whenReady().then(async () => {
   installCrashHandlers();
 
   settings = await loadSettings(settingsPath());
-  libraryDir = resolveLibraryDir();
-  await ensureLibrary(libraryDir);
+  await checkNas();
 
   // Serve project frames over endoseg-frame://frame/<projectId>/<source>/<file>.
   protocol.handle("endoseg-frame", async (req) => {
     try {
       const u = new URL(req.url);
       const parts = u.pathname.split("/").filter(Boolean).map((p) => decodeURIComponent(p));
-      const [projectId, source, filename] = parts;
-      const abs = resolveFramePath(libraryDir, projectId, source, filename);
+      const [ref, source, filename] = parts;
+      const p = resolveRef(ref);
+      const abs = p ? resolveFramePath(p.baseDir, p.id, source, filename) : null;
       if (!abs) {
         console.warn(`[seg] frame 404 (bad path) ${req.url}`);
         return new Response("not found", { status: 404 });
@@ -547,11 +612,11 @@ app.whenReady().then(async () => {
   // are honoured so the <video> element can seek without reading the whole file.
   protocol.handle("endoseg-video", async (req) => {
     try {
-      const projectId = decodeURIComponent(new URL(req.url).pathname.split("/").filter(Boolean)[0] ?? "");
-      const intake = projectId ? await readIntakeRecord(libraryDir, projectId) : null;
+      const p = resolveRef(decodeURIComponent(new URL(req.url).pathname.split("/").filter(Boolean)[0] ?? ""));
+      const intake = p ? await readIntakeRecord(p.baseDir, p.id) : null;
       const rel = intake?.playbackFile;
-      if (!rel || rel.includes("..")) return new Response("not found", { status: 404 });
-      const abs = path.join(projectDir(libraryDir, projectId), "00_intake", rel);
+      if (!p || !rel || rel.includes("..")) return new Response("not found", { status: 404 });
+      const abs = path.join(projectDir(p.baseDir, p.id), "00_intake", rel);
       const size = (await fs.stat(abs)).size;
       const ext = path.extname(abs).toLowerCase();
       const type = ext === ".webm" ? "video/webm" : ext === ".mov" ? "video/quicktime" : "video/mp4";

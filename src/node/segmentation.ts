@@ -72,6 +72,8 @@ export function resolveFramePath(
 export async function listSegFrames(
   baseDir: string,
   projectId: string,
+  /** How the endoseg-frame:// URLs address the project (the "<ws>:<case>" ref); defaults to the id. */
+  urlRef: string = projectId,
 ): Promise<SegFramesResult> {
   const index = await loadFrameIndex(baseDir, projectId);
   for (const source of ["raw", "kept"] as const) {
@@ -84,7 +86,7 @@ export async function listSegFrames(
           return {
             frameId: name,
             name: name.replace(FRAME_RE, ""),
-            url: `endoseg-frame://frame/${encodeURIComponent(projectId)}/${source}/${encodeURIComponent(name)}`,
+            url: `endoseg-frame://frame/${encodeURIComponent(urlRef)}/${source}/${encodeURIComponent(name)}`,
             width,
             height,
             ...(index[name]

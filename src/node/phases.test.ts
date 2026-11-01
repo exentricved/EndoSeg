@@ -71,7 +71,7 @@ describe("phase export (real ffmpeg integration)", () => {
     expect(Number(JSON.parse(probe.stdout).format.duration)).toBeCloseTo(3, 0);
 
     // 1 fps over 2 + 2 + 1 s of endoscopic phases; none from fluoroscopy.
-    const raw = (await fs.readdir(path.join(base, "projects", "p", "01_frames", "raw"))).sort();
+    const raw = (await fs.readdir(path.join(base, "p", "01_frames", "raw"))).sort();
     // The second attempt's frames carry _02, matching its clip.
     expect(raw).toEqual([
       "CASE_01_t00000000_duodenum_01.png",
@@ -87,7 +87,7 @@ describe("phase export (real ffmpeg integration)", () => {
       timeSec: 5,
     });
     // frames.json also indexes the clips with their source times, for training.
-    const idx = JSON.parse(await fs.readFile(path.join(base, "projects", "p", "01_frames", "frames.json"), "utf8"));
+    const idx = JSON.parse(await fs.readFile(path.join(base, "p", "01_frames", "frames.json"), "utf8"));
     expect(idx.clips[1]).toEqual({
       file: "CASE_01_cannulation-attempt/CASE_01_cannulation-attempt_01_t00002000-00004000.mp4",
       phase: "cannulation-attempt", span: 1, startSec: 2, endSec: 4,
@@ -117,7 +117,7 @@ describe("phase export (real ffmpeg integration)", () => {
       return `${s.width}x${s.height}`;
     };
     expect(await size(path.join(out, "CASE_01_cannulation-attempt", "CASE_01_cannulation-attempt_01_t00002000-00004000.mp4"))).toBe("40x32");
-    expect(await size(path.join(base, "projects", "p", "01_frames", "raw", "CASE_01_t00002000_cannulation-attempt_01.png"))).toBe("40x32");
+    expect(await size(path.join(base, "p", "01_frames", "raw", "CASE_01_t00002000_cannulation-attempt_01.png"))).toBe("40x32");
     // Clearing the crop goes back to the whole picture.
     expect(await saveCrop(base, "p", null)).toBeNull();
     expect(await loadCrop(base, "p")).toBeNull();
@@ -148,7 +148,7 @@ describe("phase export (real ffmpeg integration)", () => {
     await runPhaseExport({ baseDir: base, projectId: "p", ffmpegPath, exportRoot: out, fps: 1 });
 
     // Annotate a frame of the attempt before success is marked.
-    const proj = path.join(base, "projects", "p");
+    const proj = path.join(base, "p");
     const before = "CASE_01_t00001000_cannulation-attempt_01.png";
     expect(await fs.readdir(path.join(proj, "01_frames", "raw"))).toContain(before);
     await fs.mkdir(path.join(proj, "02_segmentation", "masks"), { recursive: true });

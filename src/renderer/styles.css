@@ -238,3 +238,26 @@ tr.attention { background: rgba(239, 68, 68, 0.08); }
   border: 1px solid var(--error); color: var(--error);
   background: color-mix(in srgb, var(--error) 10%, transparent);
 }
+
+/* ── Raw / Annotated 1 / Annotated 2 tabs ─────────────────────────────────── */
+.tabs { display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
+.tabs .tab { background: none; color: var(--muted); padding: 7px 14px; display: flex; align-items: center; gap: 8px; }
+.tabs .tab.active { background: var(--panel-2); color: var(--text); }
+.tab-count { font-size: 11px; font-weight: 600; background: var(--bg); color: var(--muted); border-radius: 10px; padding: 1px 7px; }
+.tabs .tab.active .tab-count { color: var(--accent); }
+.toolbar-actions { align-items: center; }
+.toolbar-actions .library-path { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.raw-filters { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; font-size: 13px; }
+.raw-filters input[type="search"] {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 7px 10px; font-size: 13px; min-width: 240px;
+}
+.raw-filters label { display: flex; align-items: center; gap: 6px; }
+.raw-status { font-size: 12px; color: var(--muted); }
+.raw-status.on { color: var(--done); }
+.raw-status.warn { color: var(--needs_review); }
+tr.raw-started .proj-name { color: var(--muted); }
+table.projects select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px;
+}
+.ws-chip { font-size: 11px; font-weight: 600; color: var(--accent); background: rgba(56,189,248,.12); border-radius: 10px; padding: 2px 8px; margin-left: 8px; }

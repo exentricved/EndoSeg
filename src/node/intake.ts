@@ -6,11 +6,13 @@
 // spawn-based orchestrators so the former can be unit-tested cheaply and the
 // latter exercised by a real-ffmpeg integration test.
 
-import { promises as fs, createReadStream } from "node:fs";
+import { promises as fs, createReadStream, createWriteStream } from "node:fs";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { run } from "./proc.js";
-import { projectDir, writeJsonAtomic } from "./library.js";
+import { projectDir, writeJsonAtomic, renameWithRetry } from "./library.js";
 import { buildPreviewArgs, isBrowserPlayable } from "../core/phases.js";
 
 export interface VideoMeta {
@@ -88,6 +90,44 @@ export function sha256File(file: string): Promise<string> {
   });
 }
 
+/**
+ * Copy `src` to `dest`, hashing the bytes as they pass (one read of the
+ * source, which matters for multi-GB videos on a network share). Writes to a
+ * temp name first, so an interrupted copy never looks like a finished video.
+ * `onPercent` gets whole percentages as they change.
+ */
+export async function copyAndHash(
+  src: string,
+  dest: string,
+  onPercent?: (percent: number) => void,
+): Promise<string> {
+  const total = (await fs.stat(src)).size;
+  const hash = createHash("sha256");
+  let done = 0;
+  let last = -1;
+  const tap = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      hash.update(chunk);
+      done += chunk.length;
+      const pct = total > 0 ? Math.floor((done / total) * 100) : 100;
+      if (pct !== last) {
+        last = pct;
+        onPercent?.(pct);
+      }
+      cb(null, chunk);
+    },
+  });
+  const tmp = `${dest}.partial`;
+  try {
+    await pipeline(createReadStream(src, { highWaterMark: 4 << 20 }), tap, createWriteStream(tmp));
+    await renameWithRetry(tmp, dest);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
+  }
+  return hash.digest("hex");
+}
+
 export async function probeVideo(ffprobePath: string, input: string): Promise<VideoMeta> {
   const res = await run(ffprobePath, buildProbeArgs(input));
   if (res.code !== 0) throw new Error(`ffprobe failed (${res.code}): ${res.stderr.slice(-400)}`);
@@ -130,9 +170,8 @@ export async function runIntake(opts: RunIntakeOptions): Promise<IntakeRecord> {
   const destName = safeBasename(opts.sourcePath);
   const dest = path.join(sourceDir, destName);
 
-  opts.onProgress?.({ phase: "copy" });
-  await fs.copyFile(opts.sourcePath, dest);
-  const sha256 = await sha256File(dest);
+  opts.onProgress?.({ phase: "copy", percent: 0 });
+  const sha256 = await copyAndHash(opts.sourcePath, dest, (percent) => opts.onProgress?.({ phase: "copy", percent }));
 
   opts.onProgress?.({ phase: "probe" });
   const meta = await probeVideo(opts.ffprobePath, dest);

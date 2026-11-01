@@ -12,15 +12,14 @@ import {
 // no direct Node/Electron access (contextIsolation stays on).
 const api: EndoSegApi = {
   appInfo: () => ipcRenderer.invoke(IPC.appInfo),
-  getLibrary: () => ipcRenderer.invoke(IPC.libraryGet),
-  createProject: (name) => ipcRenderer.invoke(IPC.libraryCreate, name),
-  chooseLibraryDir: () => ipcRenderer.invoke(IPC.libraryChooseDir),
+  getWorkspaces: () => ipcRenderer.invoke(IPC.workspacesGet),
+  startFromRaw: (videoPath) => ipcRenderer.invoke(IPC.rawStart, videoPath),
+  chooseNasRoot: () => ipcRenderer.invoke(IPC.nasChooseRoot),
   chooseExportDir: () => ipcRenderer.invoke(IPC.exportChooseDir),
   getProject: (id) => ipcRenderer.invoke(IPC.projectGet, id),
   revealProject: (id) => ipcRenderer.invoke(IPC.projectReveal, id),
   deleteProject: (id) => ipcRenderer.invoke(IPC.projectDelete, id),
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
-  chooseSettingDir: (key) => ipcRenderer.invoke(IPC.settingChooseDir, key),
   updateSettings: (patch) => ipcRenderer.invoke(IPC.settingsUpdate, patch),
   pickVideo: () => ipcRenderer.invoke(IPC.intakePickVideo),
   runIntake: (projectId, sourcePath) => ipcRenderer.invoke(IPC.intakeRun, projectId, sourcePath),

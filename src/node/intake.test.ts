@@ -10,6 +10,7 @@ import {
   parseProgressTime,
   buildProbeArgs,
   sha256File,
+  copyAndHash,
   runIntake,
 } from "./intake.js";
 import { run } from "./proc.js";
@@ -90,6 +91,30 @@ describe("sha256File", () => {
   });
 });
 
+describe("copyAndHash", () => {
+  it("copies, hashes in the same pass and reports rising percentages", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "endoseg-copy-"));
+    const src = path.join(dir, "src.bin");
+    const data = Buffer.alloc(9 * 1024 * 1024, 7); // > one 4 MB chunk, so several progress steps
+    await fs.writeFile(src, data);
+    const seen: number[] = [];
+    const sha = await copyAndHash(src, path.join(dir, "dest.bin"), (p) => seen.push(p));
+    expect(sha).toBe(await sha256File(src));
+    expect((await fs.readFile(path.join(dir, "dest.bin"))).equals(data)).toBe(true);
+    expect(seen.at(-1)).toBe(100);
+    expect([...seen].sort((a, b) => a - b)).toEqual(seen);
+    expect((await fs.readdir(dir)).sort()).toEqual(["dest.bin", "src.bin"]); // no .partial left
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("leaves nothing behind when the source can't be read", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "endoseg-copy-"));
+    await expect(copyAndHash(path.join(dir, "missing.mp4"), path.join(dir, "d.mp4"))).rejects.toThrow();
+    expect(await fs.readdir(dir)).toEqual([]);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+});
+
 describe("runIntake (real ffmpeg integration)", () => {
   let base: string;
   beforeEach(async () => {
@@ -114,7 +139,7 @@ describe("runIntake (real ffmpeg integration)", () => {
     });
 
     expect(record.sourceFile).toBe("Test_Clip.mp4");
-    const intakeDir = path.join(base, "projects", "case-x", "00_intake");
+    const intakeDir = path.join(base, "case-x", "00_intake");
     expect((await fs.stat(path.join(intakeDir, "source", "Test_Clip.mp4"))).isFile()).toBe(true);
     expect(record.meta).toMatchObject({ width: 64, height: 64, fps: 30, codec: "h264" });
     expect(Math.round(record.meta.durationSec)).toBe(2);
@@ -132,7 +157,7 @@ describe("runIntake (real ffmpeg integration)", () => {
     const record = await runIntake({ ...opts, sourcePath: avi, onProgress: (p) => progress.push(p.phase) });
     expect(record.playbackFile).toBe("preview.mp4");
     expect(progress).toContain("preview");
-    const intakeDir = path.join(base, "projects", "case-y", "00_intake");
+    const intakeDir = path.join(base, "case-y", "00_intake");
     const { stdout } = await run(ffprobePath, ["-v", "quiet", "-print_format", "json", "-show_streams", path.join(intakeDir, "preview.mp4")]);
     expect(JSON.parse(stdout).streams[0].codec_name).toBe("h264");
 

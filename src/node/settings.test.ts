@@ -25,21 +25,22 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ phaseFps: 99 }).phaseFps).toBe(1);
     expect(normalizeSettings({ gpu: "cpu" }).gpu).toBe("cpu");
     expect(normalizeSettings({ gpu: "metal" }).gpu).toBe("auto");
-    expect(normalizeSettings({ libraryDir: "D:/lib" }).libraryDir).toBe("D:/lib");
-    expect(normalizeSettings({ libraryDir: "" }).libraryDir).toBeNull();
-    expect(normalizeSettings({ libraryDir: null }).libraryDir).toBeNull();
+    expect(normalizeSettings({ nasRoot: "S:/nas" }).nasRoot).toBe("S:/nas");
+    expect(normalizeSettings({ nasRoot: "" }).nasRoot).toBeNull();
+    expect(normalizeSettings({ nasRoot: null }).nasRoot).toBeNull();
     expect(normalizeSettings({ exportDir: "E:/out" }).exportDir).toBe("E:/out");
     expect(normalizeSettings({ exportDir: "" }).exportDir).toBeNull();
-    expect(normalizeSettings({ rawVideosDir: "R:/raw" }).rawVideosDir).toBe("R:/raw");
-    expect(normalizeSettings({ phaseExportDir: "" }).phaseExportDir).toBeNull();
-    // Settings from older versions (name sign-in, every-Nth sampling) are dropped.
-    expect(normalizeSettings({ userName: "A", frameSampleEvery: 4 })).toEqual(DEFAULT_SETTINGS);
+    // Settings from older versions (name sign-in, every-Nth sampling, per-machine
+    // library and clip folders) are dropped.
+    expect(
+      normalizeSettings({ userName: "A", frameSampleEvery: 4, libraryDir: "D:/lib", rawVideosDir: "R:/raw", phaseExportDir: "R:/out" }),
+    ).toEqual(DEFAULT_SETTINGS);
   });
 });
 
 describe("applySettings", () => {
   it("patches only provided fields", () => {
-    const base = { ...DEFAULT_SETTINGS, libraryDir: "D:/lib" };
+    const base = { ...DEFAULT_SETTINGS, nasRoot: "S:/nas" };
     expect(applySettings(base, { phaseFps: 2 })).toEqual({ ...base, phaseFps: 2 });
     expect(applySettings(base, { gpu: "bad" })).toEqual({ ...base, gpu: "auto" });
   });
@@ -60,7 +61,7 @@ describe("loadSettings / saveSettings", () => {
 
   it("round-trips saved settings", async () => {
     const file = path.join(dir, "settings.json");
-    const saved = { libraryDir: "D:/x", exportDir: "E:/out", rawVideosDir: "R:/raw", phaseExportDir: "R:/out", phaseFps: 2, gpu: "gpu" as const };
+    const saved = { nasRoot: "S:/nas", exportDir: "E:/out", phaseFps: 2, gpu: "gpu" as const };
     await saveSettings(file, saved);
     expect(await loadSettings(file)).toEqual(saved);
   });

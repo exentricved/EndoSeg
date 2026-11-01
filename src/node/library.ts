@@ -1,6 +1,8 @@
-// Disk layer for the EndoSeg project library. Pure Node (fs/path) only — no
-// Electron — so it can be unit-tested against a temp dir. The Electron main
-// process supplies the library base directory (under userData by default).
+// Disk layer for one EndoSeg workspace folder (Annotated 1 or Annotated 2 on the
+// NAS). Pure Node (fs/path) only — no Electron — so it can be unit-tested
+// against a temp dir. Each case is a folder directly inside the workspace:
+// <workspace>\<case>\project.json. Names starting with "_" or "." are reserved
+// (e.g. _deleted) and never listed as projects.
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -30,7 +32,7 @@ const STAGE_DIRS = [
 ];
 
 export function projectsRoot(baseDir: string): string {
-  return path.join(baseDir, "projects");
+  return baseDir;
 }
 
 export function projectDir(baseDir: string, id: string): string {
@@ -48,7 +50,7 @@ export interface LibraryCheck {
 }
 
 /**
- * Create the library skeleton and prove we can write to it by creating and
+ * Create the workspace folder and prove we can write to it by creating and
  * deleting a probe file. Never throws: an unmapped/offline network drive must
  * not stop the app from opening.
  */
@@ -151,6 +153,41 @@ export async function createProjectOnDisk(
   return { id, manifest, dir };
 }
 
+/** Thrown by claimProjectOnDisk when the case folder already exists. */
+export class AlreadyExistsError extends Error {
+  constructor(id: string) {
+    super(`"${id}" has already been started by someone (its folder exists).`);
+    this.name = "AlreadyExistsError";
+  }
+}
+
+/**
+ * Create a project with exactly this id, or fail with AlreadyExistsError.
+ * The non-recursive mkdir of the case folder is the claim: it is atomic on the
+ * file server, so when two people start the same case at once only one wins.
+ */
+export async function claimProjectOnDisk(
+  baseDir: string,
+  id: string,
+  name: string,
+  now: string,
+): Promise<NewProjectResult> {
+  const dir = projectDir(baseDir, id);
+  await fs.mkdir(baseDir, { recursive: true });
+  try {
+    await fs.mkdir(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new AlreadyExistsError(id);
+    throw err;
+  }
+  for (const sub of STAGE_DIRS) {
+    await fs.mkdir(path.join(dir, sub), { recursive: true });
+  }
+  const manifest = createProject(id, name, now);
+  await writeJsonAtomic(manifestPath(baseDir, id), manifest);
+  return { id, manifest, dir };
+}
+
 /** Read + validate one project's manifest. Returns null if invalid/missing. */
 export async function readManifest(
   baseDir: string,
@@ -195,14 +232,14 @@ export async function updateStageOnDisk(
   return next;
 }
 
-/** Where deleted projects are moved: <library>/deleted/ (outside projects/, so not listed). */
+/** Where deleted projects are moved: <workspace>/_deleted/ (reserved name, so not listed). */
 export function deletedRoot(baseDir: string): string {
-  return path.join(baseDir, "deleted");
+  return path.join(baseDir, "_deleted");
 }
 
 /**
  * Remove a project from the library by moving its folder to
- * deleted/<id>__<timestamp> — recoverable by moving it back into projects/.
+ * _deleted/<id>__<timestamp> — recoverable by moving it back into the workspace.
  * Resolves to the new location, or null if there is no such project.
  */
 export async function deleteProjectOnDisk(baseDir: string, id: string, now: string): Promise<string | null> {
@@ -221,7 +258,9 @@ export async function listProjects(baseDir: string): Promise<ProjectSummary[]> {
   let entries: string[];
   try {
     const dirents = await fs.readdir(root, { withFileTypes: true });
-    entries = dirents.filter((d) => d.isDirectory()).map((d) => d.name);
+    entries = dirents
+      .filter((d) => d.isDirectory() && !d.name.startsWith("_") && !d.name.startsWith("."))
+      .map((d) => d.name);
   } catch {
     return [];
   }

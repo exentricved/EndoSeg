@@ -1,5 +1,16 @@
 # EndoSeg — unreleased
 
+## Everything on the NAS: Raw → Annotated 1 → Annotated 2
+- The home screen (**Cases**) has three tabs, each showing a NAS folder: **Raw** (`Raw ERCP Videos`), **Annotated 1** and **Annotated 2**. Every install reads the same folders, so everyone sees the same cases.
+- **Raw** lists every case folder with its video, size and where the case is: *Not started*, *In Annotated 1*, *Annotated 1 · intake not finished* or *In Annotated 2*. Filter by name, or show only cases not started. Nothing is ever written to the Raw folder.
+- **Start intake** (click, then confirm **Copy … to Annotated 1**) creates `Annotated 1\<case>\` under the case's own folder name, copies and hashes the video in one pass (with a percentage), and opens Crop. If two people start the same case at once, only one wins; the other gets "already started". A copy that stops partway leaves no half-finished video behind, and **Retry intake** appears on the Raw row.
+- A folder holding more than one video gets a picker on its Raw row.
+- Each case folder now holds everything: the video, phases, frames, masks and the clips (`<case>\clips\<case>_<label>\`). The separate *Annotated Videos* folder is no longer used.
+- **Delete…** in Annotated 1/2 moves the case to that folder's `_deleted\` (recoverable); the case shows as *Not started* in Raw again.
+- If the NAS can't be reached, a banner says so and nothing is written anywhere else.
+- Settings: one **NAS folder** (default `R:\akshin-ercp-nas`) replaces the Library, Raw videos and Phase clips folder settings.
+- **Annotated 2** is listed but empty for now; **Second review** (copying a case from Annotated 1) comes next.
+
 ## Fluoroscopic PD maneuvers
 - New maneuvers on the Phases stage: **Fluoroscopy PD guidewire pass (G)** and **Fluoroscopy PD injection (I)**. They start and end like the other maneuvers and can overlap anything.
 - Each span exports a clip into `<case>_fluoro-pd-guidewire/` or `<case>_fluoro-pd-injection/`. Like the fluoroscopy phase, they are not sampled into frames for segmentation. Endoscopic frames taken while one is under way still carry it in their name and in `maneuvers`.

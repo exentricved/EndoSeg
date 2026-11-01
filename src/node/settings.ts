@@ -7,14 +7,13 @@ import { writeJsonAtomic } from "./library.js";
 export type GpuMode = "auto" | "cpu" | "gpu";
 
 export interface Settings {
-  /** Library location; null means "use the default under Documents". */
-  libraryDir: string | null;
+  /**
+   * The shared NAS folder that holds "Raw ERCP Videos", "Annotated 1" and
+   * "Annotated 2"; null means the team default (R:kshin-ercp-nas).
+   */
+  nasRoot: string | null;
   /** Export location; null means "inside each project's 03_export folder". */
   exportDir: string | null;
-  /** Folder the video picker opens in; null means the NAS "Raw ERCP Videos" folder when mapped. */
-  rawVideosDir: string | null;
-  /** Where <case>_<phase> clip folders go; null means the NAS "Annotated Videos" folder when mapped. */
-  phaseExportDir: string | null;
   /** Frames per second extracted from the endoscopic phases for segmentation. */
   phaseFps: number;
   /** Compute preference for the segmentation pipeline. */
@@ -22,10 +21,8 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  libraryDir: null,
+  nasRoot: null,
   exportDir: null,
-  rawVideosDir: null,
-  phaseExportDir: null,
   phaseFps: 1,
   gpu: "auto",
 };
@@ -41,13 +38,9 @@ export function normalizeSettings(raw: unknown): Settings {
   const out: Settings = { ...DEFAULT_SETTINGS };
   if (!isObject(raw)) return out;
 
-  if (typeof raw.libraryDir === "string" && raw.libraryDir.trim()) {
-    out.libraryDir = raw.libraryDir;
-  } else if (raw.libraryDir === null) {
-    out.libraryDir = null;
-  }
-
-  for (const k of ["exportDir", "rawVideosDir", "phaseExportDir"] as const) {
+  // Older versions' libraryDir / rawVideosDir / phaseExportDir are dropped:
+  // every folder now derives from the NAS root.
+  for (const k of ["nasRoot", "exportDir"] as const) {
     const v = raw[k];
     if (typeof v === "string" && v.trim()) out[k] = v;
     else if (v === null) out[k] = null;

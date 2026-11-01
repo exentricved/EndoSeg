@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { STAGE_LABELS, type ProjectManifest } from "../core/stages.js";
-import { caseNameFromSource } from "../core/phases.js";
 import type { ProjectSummary } from "../core/manifest.js";
-import type { AppInfo, LibraryState } from "../shared/ipc.js";
+import type { AppInfo, WorkspacesState } from "../shared/ipc.js";
+import {
+  WORKSPACE_LABELS,
+  makeRef,
+  parseRef,
+  rawRowStatus,
+  formatBytes,
+  type RawRow,
+  type WorkspaceId,
+} from "../core/workspaces.js";
 import { StageBar } from "./StageBar.js";
 import { CrashLogView } from "./CrashLogView.js";
 import { SettingsView } from "./SettingsView.js";
@@ -12,23 +20,40 @@ import { SegmentationView } from "./SegmentationView.js";
 import { PhasesView } from "./PhasesView.js";
 import { CropView } from "./CropView.js";
 
+type Tab = "raw" | WorkspaceId;
+
+/** Projects are addressed by "<ws>:<case>" refs (see core/workspaces). */
 type View =
   | { kind: "hub" }
   | { kind: "crashlog" }
   | { kind: "settings" }
-  /** `intakePath`: a video picked from "New project" that intake should start on right away. */
+  /** `intakePath`: a Raw video that intake should start on right away. */
   | { kind: "project"; id: string; intakePath?: string }
   | { kind: "phases"; id: string; manifest: ProjectManifest | null }
   | { kind: "crop"; id: string }
   | { kind: "annotator"; id: string };
 
+/** "Annotated 1 · <case>" for a "<ws>:<case>" ref. */
+function refLabel(ref: string): string {
+  const r = parseRef(ref);
+  return r ? `${WORKSPACE_LABELS[r.ws]} · ${r.id}` : ref;
+}
+
 export function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const [library, setLibrary] = useState<LibraryState | null>(null);
+  const [ws, setWs] = useState<WorkspacesState | null>(null);
   const [view, setView] = useState<View>({ kind: "hub" });
+  const [tab, setTab] = useState<Tab>("raw");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
-    setLibrary(await window.endoseg.getLibrary());
+    setRefreshing(true);
+    try {
+      setWs(await window.endoseg.getWorkspaces());
+    } finally {
+      setRefreshing(false);
+    }
   }, []);
 
   const refreshInfo = useCallback(async () => {
@@ -40,14 +65,31 @@ export function App() {
     void refresh();
   }, [refresh, refreshInfo]);
 
-  /** New project = pick a video; the project is named after the case folder it sits in. */
-  const newFromVideo = useCallback(async () => {
-    const sourcePath = await window.endoseg.pickVideo();
-    if (!sourcePath) return;
-    const { id } = await window.endoseg.createProject(caseNameFromSource(sourcePath));
-    await refresh();
-    setView({ kind: "project", id, intakePath: sourcePath });
-  }, [refresh]);
+  /** Raw → Start intake: claim the case in Annotated 1, then intake runs on the project page. */
+  const startIntake = useCallback(
+    async (videoPath: string) => {
+      setNotice(null);
+      const r = await window.endoseg.startFromRaw(videoPath);
+      if (!r.ok || !r.ref) {
+        setNotice(r.error ?? "Could not start intake.");
+        await refresh();
+        return;
+      }
+      setView({ kind: "project", id: r.ref, intakePath: videoPath });
+    },
+    [refresh],
+  );
+
+  /** Back to the hub, on the tab the project belongs to. */
+  const backToHub = useCallback(
+    (ref?: string) => {
+      const w = ref ? parseRef(ref)?.ws : undefined;
+      if (w) setTab(w);
+      void refresh();
+      setView({ kind: "hub" });
+    },
+    [refresh],
+  );
 
   if (!info) return null;
 
@@ -102,7 +144,7 @@ export function App() {
           </button>
           <strong>Annotator</strong>
           <span className="muted" style={{ fontSize: 12 }}>
-            {projectId}
+            {refLabel(projectId)}
           </span>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}>
@@ -111,6 +153,8 @@ export function App() {
       </div>
     );
   }
+
+  const tabFolder = ws ? (tab === "raw" ? ws.folders.raw : ws.folders[tab]) : "…";
 
   return (
     <div className="app">
@@ -127,7 +171,7 @@ export function App() {
             className={view.kind === "hub" || view.kind === "project" ? "active" : ""}
             onClick={() => setView({ kind: "hub" })}
           >
-            Projects
+            Cases
           </button>
           <button
             className={view.kind === "settings" ? "active" : ""}
@@ -147,31 +191,66 @@ export function App() {
       {view.kind === "hub" && (
         <main className="hub">
           <div className="hub-toolbar">
-            <div className="library-path" title={library?.baseDir}>
-              <span className="muted">Library:</span> {library?.baseDir ?? "…"}
+            <div className="tabs" role="tablist">
+              {(["raw", "a1", "a2"] as const).map((t) => (
+                <button
+                  key={t}
+                  role="tab"
+                  aria-selected={tab === t}
+                  className={tab === t ? "tab active" : "tab"}
+                  onClick={() => setTab(t)}
+                >
+                  {t === "raw" ? "Raw" : WORKSPACE_LABELS[t]}
+                  <span className="tab-count">{ws ? (t === "raw" ? ws.raw.length : ws[t].length) : "…"}</span>
+                </button>
+              ))}
             </div>
             <div className="toolbar-actions">
-              <button onClick={() => void newFromVideo()} disabled={library ? !library.writable : true}>
-                + New project from video…
-              </button>
-              <button className="secondary" onClick={refresh}>
-                Refresh
+              <span className="library-path muted" title={tabFolder}>
+                {tabFolder}
+              </span>
+              <button className="secondary" onClick={() => void refresh()} disabled={refreshing}>
+                {refreshing ? "Refreshing…" : "Refresh"}
               </button>
             </div>
           </div>
 
-          {library && !library.writable && (
+          {ws && !ws.writable && (
             <div className="library-error">
-              ⚠ {library.error ?? "The library folder can't be used."} Projects can't be opened or saved until it is
-              reachable — check the network drive, then Refresh, or pick another folder in Settings.
+              ⚠ {ws.error ?? "The NAS folder can't be used."} Nothing can be opened or saved until it is reachable.
+              Check the network drive, then Refresh, or set the NAS folder in Settings.
+            </div>
+          )}
+          {ws?.writable && !ws.rawFound && tab === "raw" && (
+            <div className="library-error">
+              ⚠ There is no “Raw ERCP Videos” folder in {ws.nasRoot}. Check the NAS folder in Settings.
+            </div>
+          )}
+          {notice && (
+            <div className="library-error" role="status">
+              {notice}{" "}
+              <button className="link" onClick={() => setNotice(null)}>
+                Dismiss
+              </button>
             </div>
           )}
 
-          <ProjectTable
-            projects={library?.projects ?? []}
-            onOpen={(id) => setView({ kind: "project", id })}
-            onDeleted={() => void refresh()}
-          />
+          {tab === "raw" ? (
+            <RawTable
+              rows={ws?.raw ?? []}
+              disabled={!ws?.writable}
+              onStart={(v) => void startIntake(v)}
+              onRetry={(row, v) => setView({ kind: "project", id: makeRef("a1", row.caseId), intakePath: v })}
+              onOpen={(row) => setView({ kind: "project", id: makeRef(row.inA2 ? "a2" : "a1", row.caseId) })}
+            />
+          ) : (
+            <ProjectTable
+              ws={tab}
+              projects={ws?.[tab] ?? []}
+              onOpen={(id) => setView({ kind: "project", id: makeRef(tab, id) })}
+              onDeleted={() => void refresh()}
+            />
+          )}
         </main>
       )}
 
@@ -180,10 +259,7 @@ export function App() {
           key={view.id}
           id={view.id}
           intakePath={view.intakePath}
-          onBack={() => {
-            void refresh();
-            setView({ kind: "hub" });
-          }}
+          onBack={() => backToHub(view.id)}
           onOpenAnnotator={(id) => setView({ kind: "annotator", id })}
           onOpenPhases={(id, manifest) => setView({ kind: "phases", id, manifest })}
           onOpenCrop={(id) => setView({ kind: "crop", id })}
@@ -199,18 +275,150 @@ export function App() {
   );
 }
 
+function RawTable(props: {
+  rows: RawRow[];
+  disabled: boolean;
+  onStart: (videoPath: string) => void;
+  onRetry: (row: RawRow, videoPath: string) => void;
+  onOpen: (row: RawRow) => void;
+}) {
+  const [filter, setFilter] = useState("");
+  const [onlyNew, setOnlyNew] = useState(false);
+  // Chosen video per case, for the rare folder holding more than one.
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  // Two-step start: the first click arms the row, the second copies the video.
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  const q = filter.trim().toLowerCase();
+  const rows = props.rows.filter(
+    (r) => (!q || r.name.toLowerCase().includes(q)) && (!onlyNew || (!r.a1 && !r.inA2)),
+  );
+  const notStarted = props.rows.filter((r) => !r.a1 && !r.inA2 && r.videos.length).length;
+
+  return (
+    <>
+      <div className="raw-filters">
+        <input
+          type="search"
+          placeholder="Filter cases…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          aria-label="Filter cases"
+        />
+        <label className="muted">
+          <input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} /> Only cases not
+          started
+        </label>
+        <span className="muted">
+          {notStarted} not started · {props.rows.length} in Raw
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="empty">
+          <p>{props.rows.length === 0 ? "No cases in the Raw ERCP Videos folder." : "No cases match."}</p>
+        </div>
+      ) : (
+        <table className="projects">
+          <thead>
+            <tr>
+              <th>Case</th>
+              <th>Video</th>
+              <th>Size</th>
+              <th>Status</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const video = r.videos.find((v) => v.path === picked[r.name]) ?? r.videos[0];
+              const started = !!r.a1 || r.inA2;
+              const intakeUnfinished = !r.inA2 && !!r.a1 && r.a1.intakeStatus !== "done";
+              return (
+                <tr key={r.name} className={started ? "raw-started" : ""}>
+                  <td>
+                    <div className="proj-name">{r.name}</div>
+                  </td>
+                  <td>
+                    {r.videos.length > 1 && !started ? (
+                      <select
+                        value={video?.path}
+                        onChange={(e) => setPicked({ ...picked, [r.name]: e.target.value })}
+                        aria-label="Video to take in"
+                      >
+                        {r.videos.map((v) => (
+                          <option key={v.path} value={v.path}>
+                            {v.file}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="muted">{video?.file ?? "—"}</span>
+                    )}
+                  </td>
+                  <td className="muted">{formatBytes(video?.bytes ?? 0)}</td>
+                  <td>
+                    <span className={`raw-status${started ? (intakeUnfinished ? " warn" : " on") : ""}`}>
+                      {rawRowStatus(r)}
+                    </span>
+                  </td>
+                  <td>
+                    {!started && video ? (
+                      confirming === r.name ? (
+                        <div className="delete-confirm">
+                          <button
+                            onClick={() => {
+                              setConfirming(null);
+                              props.onStart(video.path);
+                            }}
+                            disabled={props.disabled}
+                          >
+                            Copy {formatBytes(video.bytes)} to Annotated 1
+                          </button>
+                          <button className="secondary" onClick={() => setConfirming(null)}>
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setConfirming(r.name)} disabled={props.disabled}>
+                          Start intake
+                        </button>
+                      )
+                    ) : started ? (
+                      <div className="delete-confirm">
+                        {intakeUnfinished && video && (
+                          <button onClick={() => props.onRetry(r, video.path)} disabled={props.disabled}>
+                            Retry intake
+                          </button>
+                        )}
+                        <button className="secondary" onClick={() => props.onOpen(r)} disabled={props.disabled}>
+                          Open
+                        </button>
+                      </div>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
 function ProjectTable(props: {
+  ws: WorkspaceId;
   projects: ProjectSummary[];
   onOpen: (id: string) => void;
   onDeleted: () => void;
 }) {
-  // Two-step delete: the first click arms the row, the second moves the project to deleted/.
+  // Two-step delete: the first click arms the row, the second moves the case to _deleted/.
   const [confirming, setConfirming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const remove = async (id: string) => {
     setDeleting(true);
     try {
-      await window.endoseg.deleteProject(id);
+      await window.endoseg.deleteProject(makeRef(props.ws, id));
       setConfirming(null);
       props.onDeleted();
     } finally {
@@ -221,9 +429,11 @@ function ProjectTable(props: {
   if (props.projects.length === 0) {
     return (
       <div className="empty">
-        <p>No projects yet.</p>
+        <p>No cases in {WORKSPACE_LABELS[props.ws]} yet.</p>
         <p className="muted">
-          Pick a video to start the Intake {"→"} Phases {"→"} Segmentation {"→"} Export pipeline.
+          {props.ws === "a1"
+            ? "Start intake on a case in the Raw tab to bring it here."
+            : "Cases come here when someone starts the second review from Annotated 1."}
         </p>
       </div>
     );
@@ -232,7 +442,7 @@ function ProjectTable(props: {
     <table className="projects">
       <thead>
         <tr>
-          <th>Project</th>
+          <th>Case</th>
           <th>Pipeline</th>
           <th>Current stage</th>
           <th>Updated</th>
@@ -248,7 +458,6 @@ function ProjectTable(props: {
           >
             <td>
               <div className="proj-name">{p.name}</div>
-              <div className="proj-id muted">{p.id}</div>
             </td>
             <td>
               <StageBar statuses={p.stageStatuses} />
@@ -270,7 +479,7 @@ function ProjectTable(props: {
               ) : (
                 <button
                   className="secondary"
-                  title="Remove from the list (moved to the library's deleted folder; exported clips are kept)"
+                  title="Remove from the list (moved to this folder's _deleted subfolder, so it can be restored)"
                   onClick={() => setConfirming(p.id)}
                 >
                   Delete…

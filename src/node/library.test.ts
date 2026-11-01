@@ -12,6 +12,8 @@ import {
   projectsRoot,
   deleteProjectOnDisk,
   deletedRoot,
+  claimProjectOnDisk,
+  AlreadyExistsError,
 } from "./library.js";
 
 const T0 = "2026-06-13T10:00:00.000Z";
@@ -27,7 +29,7 @@ afterEach(async () => {
 });
 
 describe("deleteProjectOnDisk", () => {
-  it("moves the project to deleted/ so it leaves the list but can be restored", async () => {
+  it("moves the project to _deleted/ so it leaves the list but can be restored", async () => {
     const { id } = await createProjectOnDisk(base, "Case D", T0);
     const keep = await createProjectOnDisk(base, "Case K", T0);
     const dest = await deleteProjectOnDisk(base, id, T1);
@@ -42,6 +44,36 @@ describe("deleteProjectOnDisk", () => {
     expect(await deleteProjectOnDisk(base, "..", T1)).toBeNull();
     expect(await deleteProjectOnDisk(base, "../projects", T1)).toBeNull();
     expect(await listProjects(base)).toHaveLength(1);
+  });
+});
+
+describe("claimProjectOnDisk", () => {
+  it("creates the case folder directly in the workspace under its exact name", async () => {
+    const { id, dir } = await claimProjectOnDisk(base, "Case 12 2024-01-05", "Case 12 2024-01-05", T0);
+    expect(id).toBe("Case 12 2024-01-05");
+    expect(dir).toBe(path.join(base, "Case 12 2024-01-05"));
+    expect((await fs.stat(path.join(dir, "00_intake", "source"))).isDirectory()).toBe(true);
+    expect((await listProjects(base)).map((p) => p.id)).toEqual(["Case 12 2024-01-05"]);
+  });
+
+  it("lets only one of two simultaneous starts win", async () => {
+    const results = await Promise.allSettled([
+      claimProjectOnDisk(base, "Case R", "Case R", T0),
+      claimProjectOnDisk(base, "Case R", "Case R", T0),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const lost = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(lost.reason).toBeInstanceOf(AlreadyExistsError);
+  });
+
+  it("does not list reserved _ and . folders, so _deleted never shows up", async () => {
+    const { id } = await claimProjectOnDisk(base, "Case Z", "Case Z", T0);
+    await deleteProjectOnDisk(base, id, T1);
+    await fs.mkdir(path.join(base, ".hidden"), { recursive: true });
+    expect(await listProjects(base)).toEqual([]);
+    // A deleted case can be started again.
+    await claimProjectOnDisk(base, "Case Z", "Case Z", T1);
+    expect((await listProjects(base)).map((p) => p.id)).toEqual(["Case Z"]);
   });
 });
 
@@ -131,7 +163,7 @@ describe("checkLibrary", () => {
   it("creates the skeleton and reports a writable folder, leaving no probe behind", async () => {
     const lib = path.join(base, "lib");
     expect(await checkLibrary(lib)).toEqual({ writable: true });
-    expect(await fs.readdir(lib)).toEqual(["projects"]);
+    expect(await fs.readdir(lib)).toEqual([]);
   });
 
   it("reports (rather than throws) when the drive is missing", async () => {

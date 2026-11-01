@@ -7,9 +7,10 @@ import {
 } from "../core/stages.js";
 import type { IntakeProgress, ExportProgress } from "../shared/ipc.js";
 import { StageBadge, formatTime } from "./ui.js";
+import { WORKSPACE_LABELS, parseRef } from "../core/workspaces.js";
 
 const STAGE_HINT: Record<StageId, string> = {
-  intake: "Add the ERCP video — copied into the project and hashed (videos the player can't open, e.g. AVI, also get a preview copy). Then optionally crop the picture; the crop applies to exported clips and frames.",
+  intake: "The case's video from Raw ERCP Videos — copied into the case folder and hashed (videos the player can't open, e.g. AVI, also get a preview copy). Then optionally crop the picture; the crop applies to exported clips and frames.",
   phases: "Label the procedure phases on the video, then export one clip per phase span and 1 fps frames for segmentation.",
   segmentation: "Annotate the 1 fps frames in the annotator.",
   export: "Package annotated frames + multi-class label maps (pixel = class ID) + metadata.json into 03_export/.",
@@ -125,8 +126,10 @@ export function ProjectDetail({
       <div className="detail-head">
         <button className="secondary" onClick={onBack}>← Back</button>
         <div className="detail-title">
-          <h2>{manifest.name}</h2>
-          <span className="proj-id muted">{manifest.id}</span>
+          <h2>
+            {manifest.name}
+            {parseRef(id) && <span className="ws-chip">{WORKSPACE_LABELS[parseRef(id)!.ws]}</span>}
+          </h2>
         </div>
         <button className="secondary" onClick={() => void window.endoseg.revealProject(id)}>
           Open folder

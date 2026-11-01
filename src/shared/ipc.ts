@@ -6,16 +6,16 @@ import type { ProjectManifest } from "../core/stages.js";
 import type { CropRect, PhaseLabels } from "../core/phases.js";
 import type { PhaseExportProgress } from "../node/phases.js";
 import type { Settings } from "../node/settings.js";
+import type { RawRow } from "../core/workspaces.js";
 
 export type { PhaseExportProgress };
 
 export const IPC = {
   appInfo: "app:info",
-  libraryGet: "library:get",
-  libraryCreate: "library:create",
-  libraryChooseDir: "library:chooseDir",
+  workspacesGet: "workspaces:get",
+  rawStart: "raw:start",
+  nasChooseRoot: "nas:chooseRoot",
   exportChooseDir: "export:chooseDir",
-  settingChooseDir: "settings:chooseDir",
   projectGet: "project:get",
   projectReveal: "project:reveal",
   settingsGet: "settings:get",
@@ -63,7 +63,7 @@ export interface PhasesState {
   crop: CropRect | null;
   /** Case name (folder the video came from) used for the export folders. */
   caseName: string | null;
-  /** Where the <case>_<phase> folders will be written. */
+  /** Where the <case>_<phase> folders will be written (<case>\clips). */
   exportRoot: string;
 }
 
@@ -130,36 +130,46 @@ export interface AppInfo {
   version: string;
   platform: string;
   electron: string;
-  libraryDir: string;
+  nasRoot: string;
 }
 
-export interface LibraryState {
-  baseDir: string;
-  projects: ProjectSummary[];
-  /** False when the folder can't be reached or written (e.g. NAS drive not mapped). */
+/** Everything the hub's Raw / Annotated 1 / Annotated 2 tabs show. */
+export interface WorkspacesState {
+  nasRoot: string;
+  folders: { raw: string; a1: string; a2: string };
+  /** False when the NAS is reachable but has no "Raw ERCP Videos" folder. */
+  rawFound: boolean;
+  raw: RawRow[];
+  a1: ProjectSummary[];
+  a2: ProjectSummary[];
+  /** False when the NAS can't be reached or written (e.g. drive not mapped). */
   writable: boolean;
   error?: string;
 }
 
-export interface CreateProjectResult {
-  id: string;
+export interface StartFromRawResult {
+  ok: boolean;
+  /** "<ws>:<case>" of the new (or, when already started, the existing) case. */
+  ref?: string;
+  error?: string;
 }
 
 /** The API surface exposed on `window.endoseg` by the preload bridge. */
 export interface EndoSegApi {
   appInfo(): Promise<AppInfo>;
-  getLibrary(): Promise<LibraryState>;
-  createProject(name: string): Promise<CreateProjectResult>;
-  chooseLibraryDir(): Promise<LibraryState | null>;
+  /** List the Raw folder and both Annotated folders (re-checks that the NAS is reachable). */
+  getWorkspaces(): Promise<WorkspacesState>;
+  /** Claim a Raw case in Annotated 1 (fails if someone already started it); then call runIntake. */
+  startFromRaw(videoPath: string): Promise<StartFromRawResult>;
+  /** Pick the NAS root folder; resolves to the updated settings, or null if cancelled. */
+  chooseNasRoot(): Promise<Settings | null>;
   /** Pick a custom export folder; resolves to the updated settings, or null if cancelled. */
   chooseExportDir(): Promise<Settings | null>;
   getProject(id: string): Promise<ProjectManifest | null>;
   revealProject(id: string): Promise<void>;
-  /** Move a project to <library>/deleted/ (recoverable); resolves to true if it was moved. */
+  /** Move a case to <workspace>/_deleted/ (recoverable); resolves to true if it was moved. */
   deleteProject(id: string): Promise<boolean>;
   getSettings(): Promise<Settings>;
-  /** Pick a folder for a folder-valued setting; resolves to the updated settings, or null if cancelled. */
-  chooseSettingDir(key: "rawVideosDir" | "phaseExportDir"): Promise<Settings | null>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   runIntake(projectId: string, sourcePath: string): Promise<ProjectManifest | null>;
   onIntakeProgress(cb: (p: IntakeProgress) => void): () => void;
