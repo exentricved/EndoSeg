@@ -46,6 +46,30 @@ export function App() {
   const [tab, setTab] = useState<Tab>("raw");
   const [notice, setNotice] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // Set when another computer took over the case open here.
+  const [lockLost, setLockLost] = useState<string | null>(null);
+
+  // A case's lock is held while any of its views is showing; release it on the
+  // way back to the Cases, Settings or Troubleshooting screens.
+  const openRef = view.kind === "project" || view.kind === "phases" || view.kind === "crop" || view.kind === "annotator" ? view.id : null;
+  useEffect(() => {
+    if (!openRef) {
+      setLockLost(null);
+      void window.endoseg.closeCase();
+    }
+  }, [openRef]);
+  useEffect(
+    () =>
+      window.endoseg.onCaseAccessChanged((c) =>
+        setLockLost(`${c.access.lockedBy ?? "Someone else"} took over ${refLabel(c.ref)}. Changes you make now won't be saved; go back to the case page.`),
+      ),
+    [],
+  );
+  const lostToast = lockLost && openRef ? (
+    <div className="lock-lost" role="alert">
+      🔒 {lockLost}
+    </div>
+  ) : null;
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -95,18 +119,26 @@ export function App() {
 
   if (view.kind === "crop") {
     const projectId = view.id;
-    return <CropView projectId={projectId} onDone={() => { void refresh(); setView({ kind: "project", id: projectId }); }} />;
+    return (
+      <>
+        {lostToast}
+        <CropView projectId={projectId} onDone={() => { void refresh(); setView({ kind: "project", id: projectId }); }} />
+      </>
+    );
   }
 
   if (view.kind === "phases") {
     const projectId = view.id;
     return (
+      <>
+      {lostToast}
       <PhasesView
         projectId={projectId}
         manifest={view.manifest}
         onBack={() => { void refresh(); setView({ kind: "project", id: projectId }); }}
         onExported={(m) => setView({ kind: "phases", id: projectId, manifest: m })}
       />
+      </>
     );
   }
 
@@ -147,6 +179,7 @@ export function App() {
             {refLabel(projectId)}
           </span>
         </div>
+        {lostToast}
         <div style={{ flex: 1, minHeight: 0 }}>
           <SegmentationView projectId={projectId} />
         </div>
@@ -248,6 +281,7 @@ export function App() {
               ws={tab}
               projects={ws?.[tab] ?? []}
               inReview={tab === "a1" ? ws?.a1InReview ?? [] : []}
+              openBy={ws?.openBy ?? {}}
               disabled={!ws?.writable}
               onOpen={(ref) => setView({ kind: "project", id: ref })}
               onChanged={() => void refresh()}
@@ -415,6 +449,8 @@ function ProjectTable(props: {
   projects: ProjectSummary[];
   /** Annotated 1 cases already copied to Annotated 2. */
   inReview: string[];
+  /** ref → who has it open on another computer. */
+  openBy: Record<string, string>;
   disabled: boolean;
   onOpen: (ref: string) => void;
   onChanged: () => void;
@@ -488,6 +524,11 @@ function ProjectTable(props: {
           >
             <td>
               <div className="proj-name">{p.name}</div>
+              {props.openBy[makeRef(props.ws, p.id)] && (
+                <div className="open-by" title="Others see this case read-only until it is closed">
+                  🔒 Open on {props.openBy[makeRef(props.ws, p.id)]}
+                </div>
+              )}
             </td>
             <td>
               <StageBar statuses={p.stageStatuses} />
@@ -531,9 +572,11 @@ function ProjectTable(props: {
                   {props.ws === "a1" && (
                     <button
                       onClick={() => setReviewArmed(p.id)}
-                      disabled={props.disabled || !!copying || p.stageStatuses[0]?.status !== "done"}
+                      disabled={props.disabled || !!copying || p.stageStatuses[0]?.status !== "done" || !!props.openBy[makeRef("a1", p.id)]}
                       title={
-                        p.stageStatuses[0]?.status === "done"
+                        props.openBy[makeRef("a1", p.id)]
+                          ? "Someone has this case open; it can be sent to review once they close it"
+                          : p.stageStatuses[0]?.status === "done"
                           ? "Copy the whole case to Annotated 2 for the second reader; this copy becomes read-only"
                           : "Finish intake first"
                       }
@@ -545,7 +588,7 @@ function ProjectTable(props: {
                     className="secondary"
                     title="Remove from the list (moved to this folder's _deleted subfolder, so it can be restored)"
                     onClick={() => setConfirming(p.id)}
-                    disabled={!!copying}
+                    disabled={!!copying || !!props.openBy[makeRef(props.ws, p.id)]}
                   >
                     Delete…
                   </button>

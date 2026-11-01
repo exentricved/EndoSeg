@@ -274,3 +274,24 @@ table.projects select {
   border-radius: 8px;
   background: rgba(59, 91, 133, 0.18);
 }
+
+/* Open-case lock. */
+.open-by {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #f0b45a;
+}
+.lock-lost {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  max-width: 90vw;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid #b0413e;
+  background: #3a1517;
+  color: #ffd9d6;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}

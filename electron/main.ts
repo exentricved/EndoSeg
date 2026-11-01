@@ -19,6 +19,17 @@ import {
 } from "../src/shared/ipc.js";
 import { startSecondReview, isInReview } from "../src/node/review.js";
 import {
+  acquireLock,
+  heartbeat,
+  releaseLock,
+  foreignLock,
+  holderLabel,
+  HEARTBEAT_MS,
+  type Me,
+} from "../src/node/caselock.js";
+import { randomUUID } from "node:crypto";
+import * as os from "node:os";
+import {
   claimProjectOnDisk,
   AlreadyExistsError,
   listProjects,
@@ -171,12 +182,78 @@ async function workspacesState(): Promise<WorkspacesState> {
     a1,
     a2,
     a1InReview: a1.filter((p) => isInReview(workspaceDir("a2"), p.id)).map((p) => p.id),
+    openBy: ok ? await openByMap(a1, a2) : {},
     ...nasCheck,
   };
 }
 
-/** Annotated 1 cases are read-only while they have a copy in Annotated 2. */
-function accessOf(p: Resolved): CaseAccess {
+// ── Open-case lock ───────────────────────────────────────────────────────────
+
+/** This app run. The lock shows the computer and Windows user, nothing is kept after closing. */
+const me: Me = (() => {
+  let user = "";
+  try {
+    user = os.userInfo().username;
+  } catch {
+    /* no user info */
+  }
+  return { sessionId: randomUUID(), computer: os.hostname(), user };
+})();
+
+/** The case this app has open (one at a time), and its heartbeat timer. */
+let held: { ref: string; dir: string } | null = null;
+let heartbeatTimer: NodeJS.Timeout | null = null;
+
+function caseDirOf(p: Resolved): string {
+  return projectDir(p.baseDir, p.id);
+}
+
+async function closeHeld(): Promise<void> {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+  const h = held;
+  held = null;
+  if (h) await releaseLock(h.dir, me.sessionId);
+}
+
+function startHeartbeat(): void {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
+    const h = held;
+    if (!h) return;
+    void heartbeat(h.dir, me.sessionId, Date.now())
+      .then(async (stillMine) => {
+        if (stillMine || held !== h) return;
+        // Someone took the case over: stop saving and tell the renderer.
+        held = null;
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+        const p = resolveRef(h.ref);
+        if (p) mainWindow?.webContents.send(IPC.caseAccessChanged, { ref: h.ref, access: await accessOf(p) });
+      })
+      .catch(() => undefined); // NAS blip: try again next beat
+  }, HEARTBEAT_MS);
+}
+
+async function openByMap(a1: { id: string }[], a2: { id: string }[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const now = Date.now();
+  const all = [...a1.map((c) => makeRef("a1", c.id)), ...a2.map((c) => makeRef("a2", c.id))];
+  await Promise.all(
+    all.map(async (ref) => {
+      const p = resolveRef(ref);
+      const l = p && (await foreignLock(caseDirOf(p), me.sessionId, now));
+      if (l) out[ref] = holderLabel(l);
+    }),
+  );
+  return out;
+}
+
+/**
+ * Annotated 1 cases are read-only while they have a copy in Annotated 2, and
+ * any case is read-only while someone else has it open.
+ */
+async function accessOf(p: Resolved): Promise<CaseAccess> {
   if (p.ws === "a1" && isInReview(workspaceDir("a2"), p.id)) {
     return {
       readOnly: true,
@@ -184,14 +261,23 @@ function accessOf(p: Resolved): CaseAccess {
       reviewRef: makeRef("a2", p.id),
     };
   }
+  const l = await foreignLock(caseDirOf(p), me.sessionId, Date.now());
+  if (l) {
+    return {
+      readOnly: true,
+      reason: `${holderLabel(l)} has this case open, so you can't change it here.`,
+      lockedBy: holderLabel(l),
+      lockedSince: l.openedAt,
+    };
+  }
   return { readOnly: false };
 }
 
 /** Resolve a ref for a write; throws if the case is read-only (backstop for the UI). */
-function editable(ref: unknown): Resolved | null {
+async function editable(ref: unknown): Promise<Resolved | null> {
   const p = resolveRef(ref);
   if (!p) return null;
-  const a = accessOf(p);
+  const a = await accessOf(p);
   if (a.readOnly) throw new Error(a.reason);
   return p;
 }
@@ -311,16 +397,39 @@ function registerIpc(): void {
     if (p) shell.showItemInFolder(path.join(projectDir(p.baseDir, p.id), "project.json"));
   });
 
-  ipcMain.handle(IPC.projectAccess, (_e, ref: unknown): CaseAccess => {
+  ipcMain.handle(IPC.projectAccess, async (_e, ref: unknown): Promise<CaseAccess> => {
     const p = resolveRef(ref);
     return p ? accessOf(p) : { readOnly: true, reason: "Unknown case." };
   });
+
+  ipcMain.handle(IPC.caseOpen, async (_e, ref: unknown, takeOver: unknown): Promise<CaseAccess> => {
+    const p = resolveRef(ref);
+    if (!p) return { readOnly: true, reason: "Unknown case." };
+    if (held && held.ref !== p.ref) await closeHeld();
+    // A case in second review stays read-only in Annotated 1; no lock needed.
+    if (p.ws === "a1" && isInReview(workspaceDir("a2"), p.id)) return accessOf(p);
+    const dir = caseDirOf(p);
+    if (!existsSync(dir)) return { readOnly: true, reason: "This case's folder can't be found." };
+    try {
+      const r = await acquireLock(dir, me, Date.now(), takeOver === true);
+      if (!r.ok) return accessOf(p);
+      held = { ref: p.ref, dir };
+      startHeartbeat();
+      return { readOnly: false };
+    } catch (err) {
+      return { readOnly: true, reason: `Can't open the case for editing: ${(err as Error).message}` };
+    }
+  });
+
+  ipcMain.handle(IPC.caseClose, () => closeHeld());
 
   // Annotated 1 → Second review: full verified copy into Annotated 2.
   ipcMain.handle(IPC.reviewStart, async (event, ref: unknown): Promise<ReviewStartResult> => {
     const p = resolveRef(ref);
     if (!p || p.ws !== "a1") return { ok: false, error: "Second review starts from a case in Annotated 1." };
     if (!nasCheck.writable) return { ok: false, error: nasCheck.error ?? "The NAS folder can't be reached." };
+    const open = await foreignLock(caseDirOf(p), me.sessionId, Date.now());
+    if (open) return { ok: false, error: `${holderLabel(open)} has this case open. Ask them to close it first, so the review starts from their finished work.` };
     try {
       await startSecondReview({
         a1Dir: workspaceDir("a1"),
@@ -340,7 +449,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.projectDelete, async (_e, ref: unknown): Promise<boolean> => {
-    const p = editable(ref);
+    const p = await editable(ref);
     return p ? (await deleteProjectOnDisk(p.baseDir, p.id, nowIso())) !== null : false;
   });
 
@@ -367,7 +476,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.intakeRun, async (_e, ref: unknown, sourcePath: unknown) => {
-    const p = editable(ref);
+    const p = await editable(ref);
     if (!p || typeof sourcePath !== "string") return null;
     const { baseDir, id: projectId } = p;
     if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
@@ -419,7 +528,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.phasesSave, async (_e, ref: unknown, labels: unknown) => {
-    const p = editable(ref);
+    const p = await editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     const saved = await savePhaseLabels(baseDir, projectId, labels);
@@ -429,7 +538,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.phasesExport, async (event, ref: unknown) => {
-    const p = editable(ref);
+    const p = await editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
@@ -461,7 +570,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.cropSave, async (_e, ref: unknown, crop: unknown) => {
-    const p = editable(ref);
+    const p = await editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     const saved = await saveCrop(baseDir, projectId, crop);
@@ -495,7 +604,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.segSave, async (_e, ref: unknown, snapshot: unknown) => {
-    const p = editable(ref);
+    const p = await editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     try {
@@ -518,7 +627,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.exportRun, async (event, ref: unknown) => {
-    const p = editable(ref);
+    const p = await editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     const send = (p: ExportProgress) => event.sender.send(IPC.exportProgress, p);
@@ -551,7 +660,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.framesRemove, async (_e, ref: unknown, frameIds: unknown): Promise<string[]> => {
-    const p = editable(ref);
+    const p = await editable(ref);
     if (!p || !Array.isArray(frameIds)) return [];
     const names = frameIds.filter((f): f is string => typeof f === "string");
     return removeFrames(p.baseDir, p.id, names);
@@ -714,4 +823,13 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+// Release the open-case lock on the way out (a crash just lets it go stale).
+let releasedOnQuit = false;
+app.on("before-quit", (e) => {
+  if (releasedOnQuit || !held) return;
+  e.preventDefault();
+  releasedOnQuit = true;
+  void closeHeld().finally(() => app.quit());
 });

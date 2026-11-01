@@ -19,6 +19,13 @@
 - Deleting the Annotated 2 copy (moved to `Annotated 2\_deleted\`) makes the Annotated 1 case editable again.
 - Per-machine scratch (`autosave`, `logs`) and half-written temp files are not copied.
 
+## One editor per case: open-case lock
+- Opening a case writes `<case>\.open.lock` with the computer name and Windows user, refreshed every 30 s, and deletes it when you go back to Cases or quit EndoSeg. Nothing is kept after the case is closed.
+- While someone has a case open, others see **🔒 Open on PC (user)** on its row, and opening it is read-only, with a banner saying who has it and since when. **Check again** re-tries; **Take over…** (confirm) takes the case, and their unsaved changes are lost.
+- Whoever lost the case sees a red warning within 30 s, in any view (annotator, phases, crop), and their saves are refused from then on.
+- If EndoSeg crashes or the PC sleeps, its lock goes stale after 2 minutes and the next person to open the case gets it automatically.
+- Second review and Delete wait until nobody has the case open.
+
 ## Fluoroscopic PD maneuvers
 - New maneuvers on the Phases stage: **Fluoroscopy PD guidewire pass (G)** and **Fluoroscopy PD injection (I)**. They start and end like the other maneuvers and can overlap anything.
 - Each span exports a clip into `<case>_fluoro-pd-guidewire/` or `<case>_fluoro-pd-injection/`. Like the fluoroscopy phase, they are not sampled into frames for segmentation. Endoscopic frames taken while one is under way still carry it in their name and in `maneuvers`.

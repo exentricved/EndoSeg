@@ -46,6 +46,9 @@ export const IPC = {
   projectAccess: "project:access",
   reviewStart: "review:start",
   reviewProgress: "review:progress",
+  caseOpen: "case:open",
+  caseClose: "case:close",
+  caseAccessChanged: "case:accessChanged",
 } as const;
 
 export type { ReviewProgress };
@@ -57,6 +60,16 @@ export interface CaseAccess {
   reason?: string;
   /** Ref of the editable copy (the Annotated 2 case), when there is one. */
   reviewRef?: string;
+  /** Set when someone else has the case open: "PC-123 (jdoe)". */
+  lockedBy?: string;
+  /** When they opened it (ISO). */
+  lockedSince?: string;
+}
+
+/** Pushed when this app loses a case's lock (someone took it over). */
+export interface CaseAccessChange {
+  ref: string;
+  access: CaseAccess;
 }
 
 export interface ReviewStartResult {
@@ -166,6 +179,8 @@ export interface WorkspacesState {
   a2: ProjectSummary[];
   /** Annotated 1 cases that have a copy in Annotated 2 (read-only in Annotated 1). */
   a1InReview: string[];
+  /** Cases someone else has open right now: ref → "PC-123 (jdoe)". */
+  openBy: Record<string, string>;
   /** False when the NAS can't be reached or written (e.g. drive not mapped). */
   writable: boolean;
   error?: string;
@@ -198,6 +213,15 @@ export interface EndoSegApi {
   /** Copy an Annotated 1 case (video included) to Annotated 2 and verify it by hash. */
   startSecondReview(id: string): Promise<ReviewStartResult>;
   onReviewProgress(cb: (p: ReviewProgress) => void): () => void;
+  /**
+   * Open a case for editing: takes its lock (or, with takeOver, takes it from
+   * whoever has it). Resolves to the case's access; read-only when someone else
+   * has it open. Closes any other case this app had open.
+   */
+  openCase(id: string, takeOver?: boolean): Promise<CaseAccess>;
+  /** Release the lock of the case this app has open (back on the Cases screen). */
+  closeCase(): Promise<void>;
+  onCaseAccessChanged(cb: (c: CaseAccessChange) => void): () => void;
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   runIntake(projectId: string, sourcePath: string): Promise<ProjectManifest | null>;

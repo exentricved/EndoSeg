@@ -54,7 +54,8 @@ export function ProjectDetail({
   const unsub = useRef<(() => void) | null>(null);
 
   const load = useCallback(async () => {
-    const [m, a] = await Promise.all([window.endoseg.getProject(id), window.endoseg.getAccess(id)]);
+    // Opening the case takes its lock (read-only if someone else has it open).
+    const [m, a] = await Promise.all([window.endoseg.getProject(id), window.endoseg.openCase(id)]);
     setAccess(a);
     if (!m) setMissing(true);
     else setManifest(m);
@@ -65,6 +66,19 @@ export function ProjectDetail({
   }, [load]);
 
   useEffect(() => () => unsub.current?.(), []);
+
+  // Someone took the case over while it was open here.
+  useEffect(
+    () => window.endoseg.onCaseAccessChanged((c) => c.ref === id && setAccess(c.access)),
+    [id],
+  );
+
+  const [takeOverArmed, setTakeOverArmed] = useState(false);
+  const takeOver = useCallback(async () => {
+    setTakeOverArmed(false);
+    setAccess(await window.endoseg.openCase(id, true));
+    await load();
+  }, [id, load]);
 
   const runIntake = useCallback(async (picked?: string) => {
     const sourcePath = picked ?? (await window.endoseg.pickVideo());
@@ -144,10 +158,33 @@ export function ProjectDetail({
 
       {access.readOnly && (
         <div className="readonly-banner" role="status">
-          <span>🔒 Read-only. {access.reason}</span>
+          <span>
+            🔒 Read-only. {access.reason}
+            {access.lockedSince && <> Opened {formatTime(access.lockedSince)}.</>}
+          </span>
           {access.reviewRef && (
             <button onClick={() => onOpenCase(access.reviewRef!)}>Open the Annotated 2 copy</button>
           )}
+          {access.lockedBy &&
+            (takeOverArmed ? (
+              <span className="delete-confirm">
+                <button className="danger" onClick={() => void takeOver()}>
+                  Take over (their unsaved changes are lost)
+                </button>
+                <button className="secondary" onClick={() => setTakeOverArmed(false)}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <span className="delete-confirm">
+                <button className="secondary" onClick={() => void load()}>
+                  Check again
+                </button>
+                <button className="secondary" onClick={() => setTakeOverArmed(true)}>
+                  Take over…
+                </button>
+              </span>
+            ))}
         </div>
       )}
 
