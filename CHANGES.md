@@ -9,7 +9,15 @@
 - **Delete…** in Annotated 1/2 moves the case to that folder's `_deleted\` (recoverable); the case shows as *Not started* in Raw again.
 - If the NAS can't be reached, a banner says so and nothing is written anywhere else.
 - Settings: one **NAS folder** (default `R:\akshin-ercp-nas`) replaces the Library, Raw videos and Phase clips folder settings.
-- **Annotated 2** is listed but empty for now; **Second review** (copying a case from Annotated 1) comes next.
+
+## Second review: Annotated 1 → Annotated 2
+- **Second review** on an Annotated 1 row (click, then confirm **Copy to Annotated 2**) copies the whole case, video included, to `Annotated 2\<case>\` and opens it there. Progress shows as *Copying …%* then *Checking copy …%*. Needs intake to be done.
+- Every file is hashed while it is copied, then the copy is read back and checked against those hashes. The video must also still match the hash recorded at intake. Any mismatch or failure removes the partial copy, so the review can simply be retried.
+- The file list with sizes and SHA-256 hashes is saved as `provenance.json` in the Annotated 2 case and as `sent-to-review.json` in the Annotated 1 case, as a second record.
+- While a case is in Annotated 2, its Annotated 1 copy is **read-only**: the row shows *🔒 In Annotated 2* with **Open review copy**, and the case page shows a banner with **Open the Annotated 2 copy**. Saving, exporting, re-importing and deleting are refused for it, in the app's back end too.
+- If two people start the same review at once, only one wins; the other gets "already in Annotated 2".
+- Deleting the Annotated 2 copy (moved to `Annotated 2\_deleted\`) makes the Annotated 1 case editable again.
+- Per-machine scratch (`autosave`, `logs`) and half-written temp files are not copied.
 
 ## Fluoroscopic PD maneuvers
 - New maneuvers on the Phases stage: **Fluoroscopy PD guidewire pass (G)** and **Fluoroscopy PD injection (I)**. They start and end like the other maneuvers and can overlap anything.

@@ -155,8 +155,8 @@ export async function createProjectOnDisk(
 
 /** Thrown by claimProjectOnDisk when the case folder already exists. */
 export class AlreadyExistsError extends Error {
-  constructor(id: string) {
-    super(`"${id}" has already been started by someone (its folder exists).`);
+  constructor(id: string, what = "has already been started by someone (its folder exists).") {
+    super(`"${id}" ${what}`);
     this.name = "AlreadyExistsError";
   }
 }

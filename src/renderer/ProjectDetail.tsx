@@ -5,7 +5,7 @@ import {
   type ProjectManifest,
   type StageId,
 } from "../core/stages.js";
-import type { IntakeProgress, ExportProgress } from "../shared/ipc.js";
+import type { IntakeProgress, ExportProgress, CaseAccess } from "../shared/ipc.js";
 import { StageBadge, formatTime } from "./ui.js";
 import { WORKSPACE_LABELS, parseRef } from "../core/workspaces.js";
 
@@ -34,6 +34,7 @@ export function ProjectDetail({
   onOpenAnnotator,
   onOpenPhases,
   onOpenCrop,
+  onOpenCase,
 }: {
   id: string;
   /** Start intake on this video as soon as the project opens (from "New project from video"). */
@@ -42,15 +43,19 @@ export function ProjectDetail({
   onOpenAnnotator: (id: string) => void;
   onOpenPhases: (id: string, manifest: ProjectManifest) => void;
   onOpenCrop: (id: string) => void;
+  /** Open another case (the Annotated 2 copy of a read-only case). */
+  onOpenCase: (id: string) => void;
 }) {
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [missing, setMissing] = useState(false);
   const [running, setRunning] = useState<StageId | null>(null);
   const [statusLine, setStatusLine] = useState<string | null>(null);
+  const [access, setAccess] = useState<CaseAccess>({ readOnly: false });
   const unsub = useRef<(() => void) | null>(null);
 
   const load = useCallback(async () => {
-    const m = await window.endoseg.getProject(id);
+    const [m, a] = await Promise.all([window.endoseg.getProject(id), window.endoseg.getAccess(id)]);
+    setAccess(a);
     if (!m) setMissing(true);
     else setManifest(m);
   }, [id]);
@@ -119,7 +124,8 @@ export function ProjectDetail({
   }
   if (!manifest) return <main className="detail"><p className="muted">Loading…</p></main>;
 
-  const busy = running !== null;
+  // Read-only cases (Annotated 1 once in second review) only offer Open folder.
+  const busy = running !== null || access.readOnly;
 
   return (
     <main className="detail">
@@ -135,6 +141,15 @@ export function ProjectDetail({
           Open folder
         </button>
       </div>
+
+      {access.readOnly && (
+        <div className="readonly-banner" role="status">
+          <span>🔒 Read-only. {access.reason}</span>
+          {access.reviewRef && (
+            <button onClick={() => onOpenCase(access.reviewRef!)}>Open the Annotated 2 copy</button>
+          )}
+        </div>
+      )}
 
       <div className="stage-list">
         {STAGES.map((stage, i) => {

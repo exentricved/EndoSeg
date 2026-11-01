@@ -247,8 +247,11 @@ export function App() {
             <ProjectTable
               ws={tab}
               projects={ws?.[tab] ?? []}
-              onOpen={(id) => setView({ kind: "project", id: makeRef(tab, id) })}
-              onDeleted={() => void refresh()}
+              inReview={tab === "a1" ? ws?.a1InReview ?? [] : []}
+              disabled={!ws?.writable}
+              onOpen={(ref) => setView({ kind: "project", id: ref })}
+              onChanged={() => void refresh()}
+              onNotice={setNotice}
             />
           )}
         </main>
@@ -263,6 +266,7 @@ export function App() {
           onOpenAnnotator={(id) => setView({ kind: "annotator", id })}
           onOpenPhases={(id, manifest) => setView({ kind: "phases", id, manifest })}
           onOpenCrop={(id) => setView({ kind: "crop", id })}
+          onOpenCase={(id) => setView({ kind: "project", id })}
         />
       )}
 
@@ -409,9 +413,35 @@ function RawTable(props: {
 function ProjectTable(props: {
   ws: WorkspaceId;
   projects: ProjectSummary[];
-  onOpen: (id: string) => void;
-  onDeleted: () => void;
+  /** Annotated 1 cases already copied to Annotated 2. */
+  inReview: string[];
+  disabled: boolean;
+  onOpen: (ref: string) => void;
+  onChanged: () => void;
+  onNotice: (msg: string | null) => void;
 }) {
+  // Two-step second review: the first click arms the row, the second copies the case.
+  const [reviewArmed, setReviewArmed] = useState<string | null>(null);
+  const [copying, setCopying] = useState<{ id: string; line: string } | null>(null);
+  const review = async (id: string) => {
+    setReviewArmed(null);
+    props.onNotice(null);
+    setCopying({ id, line: "Copying 0%…" });
+    const off = window.endoseg.onReviewProgress((p) =>
+      setCopying({ id, line: `${p.phase === "copy" ? "Copying" : "Checking copy"} ${p.percent}%…` }),
+    );
+    try {
+      const r = await window.endoseg.startSecondReview(makeRef("a1", id));
+      if (r.ok && r.ref) props.onOpen(r.ref);
+      else {
+        props.onNotice(r.error ?? "Could not start the second review.");
+        props.onChanged();
+      }
+    } finally {
+      off();
+      setCopying(null);
+    }
+  };
   // Two-step delete: the first click arms the row, the second moves the case to _deleted/.
   const [confirming, setConfirming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -420,7 +450,7 @@ function ProjectTable(props: {
     try {
       await window.endoseg.deleteProject(makeRef(props.ws, id));
       setConfirming(null);
-      props.onDeleted();
+      props.onChanged();
     } finally {
       setDeleting(false);
     }
@@ -454,7 +484,7 @@ function ProjectTable(props: {
           <tr
             key={p.id}
             className={`clickable ${p.needsAttention ? "attention" : ""}`}
-            onClick={() => props.onOpen(p.id)}
+            onClick={() => !copying && props.onOpen(makeRef(props.ws, p.id))}
           >
             <td>
               <div className="proj-name">{p.name}</div>
@@ -467,7 +497,27 @@ function ProjectTable(props: {
             </td>
             <td className="muted">{formatTime(p.updatedAt)}</td>
             <td onClick={(e) => e.stopPropagation()}>
-              {confirming === p.id ? (
+              {props.inReview.includes(p.id) ? (
+                <div className="delete-confirm">
+                  <span className="raw-status on" title="Read-only here: the case is being reviewed in Annotated 2">
+                    🔒 In Annotated 2
+                  </span>
+                  <button className="secondary" onClick={() => props.onOpen(makeRef("a2", p.id))} disabled={props.disabled}>
+                    Open review copy
+                  </button>
+                </div>
+              ) : copying?.id === p.id ? (
+                <span className="intake-progress">{copying.line}</span>
+              ) : reviewArmed === p.id ? (
+                <div className="delete-confirm">
+                  <button onClick={() => void review(p.id)} disabled={props.disabled || !!copying}>
+                    Copy to Annotated 2
+                  </button>
+                  <button className="secondary" onClick={() => setReviewArmed(null)}>
+                    Cancel
+                  </button>
+                </div>
+              ) : confirming === p.id ? (
                 <div className="delete-confirm">
                   <button className="danger" onClick={() => void remove(p.id)} disabled={deleting}>
                     Delete
@@ -477,13 +527,29 @@ function ProjectTable(props: {
                   </button>
                 </div>
               ) : (
-                <button
-                  className="secondary"
-                  title="Remove from the list (moved to this folder's _deleted subfolder, so it can be restored)"
-                  onClick={() => setConfirming(p.id)}
-                >
-                  Delete…
-                </button>
+                <div className="delete-confirm">
+                  {props.ws === "a1" && (
+                    <button
+                      onClick={() => setReviewArmed(p.id)}
+                      disabled={props.disabled || !!copying || p.stageStatuses[0]?.status !== "done"}
+                      title={
+                        p.stageStatuses[0]?.status === "done"
+                          ? "Copy the whole case to Annotated 2 for the second reader; this copy becomes read-only"
+                          : "Finish intake first"
+                      }
+                    >
+                      Second review
+                    </button>
+                  )}
+                  <button
+                    className="secondary"
+                    title="Remove from the list (moved to this folder's _deleted subfolder, so it can be restored)"
+                    onClick={() => setConfirming(p.id)}
+                    disabled={!!copying}
+                  >
+                    Delete…
+                  </button>
+                </div>
               )}
             </td>
           </tr>

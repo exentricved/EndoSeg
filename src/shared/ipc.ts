@@ -7,6 +7,7 @@ import type { CropRect, PhaseLabels } from "../core/phases.js";
 import type { PhaseExportProgress } from "../node/phases.js";
 import type { Settings } from "../node/settings.js";
 import type { RawRow } from "../core/workspaces.js";
+import type { ReviewProgress } from "../node/review.js";
 
 export type { PhaseExportProgress };
 
@@ -42,7 +43,28 @@ export const IPC = {
   phasesReveal: "phases:reveal",
   cropSave: "crop:save",
   projectDelete: "project:delete",
+  projectAccess: "project:access",
+  reviewStart: "review:start",
+  reviewProgress: "review:progress",
 } as const;
+
+export type { ReviewProgress };
+
+/** Whether a case can be edited here. */
+export interface CaseAccess {
+  readOnly: boolean;
+  /** Shown to the user when read-only. */
+  reason?: string;
+  /** Ref of the editable copy (the Annotated 2 case), when there is one. */
+  reviewRef?: string;
+}
+
+export interface ReviewStartResult {
+  ok: boolean;
+  /** "a2:<case>" of the new review copy (or the existing one, when already started). */
+  ref?: string;
+  error?: string;
+}
 
 export interface IntakeProgress {
   phase: "copy" | "probe" | "preview";
@@ -142,6 +164,8 @@ export interface WorkspacesState {
   raw: RawRow[];
   a1: ProjectSummary[];
   a2: ProjectSummary[];
+  /** Annotated 1 cases that have a copy in Annotated 2 (read-only in Annotated 1). */
+  a1InReview: string[];
   /** False when the NAS can't be reached or written (e.g. drive not mapped). */
   writable: boolean;
   error?: string;
@@ -169,6 +193,11 @@ export interface EndoSegApi {
   revealProject(id: string): Promise<void>;
   /** Move a case to <workspace>/_deleted/ (recoverable); resolves to true if it was moved. */
   deleteProject(id: string): Promise<boolean>;
+  /** Read-only state of a case (Annotated 1 cases are read-only once in second review). */
+  getAccess(id: string): Promise<CaseAccess>;
+  /** Copy an Annotated 1 case (video included) to Annotated 2 and verify it by hash. */
+  startSecondReview(id: string): Promise<ReviewStartResult>;
+  onReviewProgress(cb: (p: ReviewProgress) => void): () => void;
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   runIntake(projectId: string, sourcePath: string): Promise<ProjectManifest | null>;

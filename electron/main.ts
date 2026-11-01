@@ -14,7 +14,10 @@ import {
   type PhaseExportProgress,
   type PhasesState,
   type UpdateStatus,
+  type CaseAccess,
+  type ReviewStartResult,
 } from "../src/shared/ipc.js";
+import { startSecondReview, isInReview } from "../src/node/review.js";
 import {
   claimProjectOnDisk,
   AlreadyExistsError,
@@ -167,8 +170,30 @@ async function workspacesState(): Promise<WorkspacesState> {
     raw: rawRows(raw, a1, a2),
     a1,
     a2,
+    a1InReview: a1.filter((p) => isInReview(workspaceDir("a2"), p.id)).map((p) => p.id),
     ...nasCheck,
   };
+}
+
+/** Annotated 1 cases are read-only while they have a copy in Annotated 2. */
+function accessOf(p: Resolved): CaseAccess {
+  if (p.ws === "a1" && isInReview(workspaceDir("a2"), p.id)) {
+    return {
+      readOnly: true,
+      reason: "This case is in second review. Its Annotated 1 copy is kept unchanged as the record of the first pass; edit the Annotated 2 copy instead.",
+      reviewRef: makeRef("a2", p.id),
+    };
+  }
+  return { readOnly: false };
+}
+
+/** Resolve a ref for a write; throws if the case is read-only (backstop for the UI). */
+function editable(ref: unknown): Resolved | null {
+  const p = resolveRef(ref);
+  if (!p) return null;
+  const a = accessOf(p);
+  if (a.readOnly) throw new Error(a.reason);
+  return p;
 }
 
 // ── Crash handling ───────────────────────────────────────────────────────────
@@ -286,8 +311,36 @@ function registerIpc(): void {
     if (p) shell.showItemInFolder(path.join(projectDir(p.baseDir, p.id), "project.json"));
   });
 
-  ipcMain.handle(IPC.projectDelete, async (_e, ref: unknown): Promise<boolean> => {
+  ipcMain.handle(IPC.projectAccess, (_e, ref: unknown): CaseAccess => {
     const p = resolveRef(ref);
+    return p ? accessOf(p) : { readOnly: true, reason: "Unknown case." };
+  });
+
+  // Annotated 1 → Second review: full verified copy into Annotated 2.
+  ipcMain.handle(IPC.reviewStart, async (event, ref: unknown): Promise<ReviewStartResult> => {
+    const p = resolveRef(ref);
+    if (!p || p.ws !== "a1") return { ok: false, error: "Second review starts from a case in Annotated 1." };
+    if (!nasCheck.writable) return { ok: false, error: nasCheck.error ?? "The NAS folder can't be reached." };
+    try {
+      await startSecondReview({
+        a1Dir: workspaceDir("a1"),
+        a2Dir: workspaceDir("a2"),
+        id: p.id,
+        now: nowIso(),
+        appVersion: app.getVersion(),
+        onProgress: (pr) => event.sender.send(IPC.reviewProgress, pr),
+      });
+      return { ok: true, ref: makeRef("a2", p.id) };
+    } catch (err) {
+      if (err instanceof AlreadyExistsError) return { ok: false, error: err.message, ref: makeRef("a2", p.id) };
+      const e = err instanceof Error ? err : new Error(String(err));
+      await crashLogger.record({ source: "review", message: e.message, detail: e.stack, projectId: p.id }, nowIso());
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle(IPC.projectDelete, async (_e, ref: unknown): Promise<boolean> => {
+    const p = editable(ref);
     return p ? (await deleteProjectOnDisk(p.baseDir, p.id, nowIso())) !== null : false;
   });
 
@@ -314,7 +367,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.intakeRun, async (_e, ref: unknown, sourcePath: unknown) => {
-    const p = resolveRef(ref);
+    const p = editable(ref);
     if (!p || typeof sourcePath !== "string") return null;
     const { baseDir, id: projectId } = p;
     if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
@@ -366,7 +419,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.phasesSave, async (_e, ref: unknown, labels: unknown) => {
-    const p = resolveRef(ref);
+    const p = editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     const saved = await savePhaseLabels(baseDir, projectId, labels);
@@ -376,7 +429,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.phasesExport, async (event, ref: unknown) => {
-    const p = resolveRef(ref);
+    const p = editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
@@ -408,7 +461,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.cropSave, async (_e, ref: unknown, crop: unknown) => {
-    const p = resolveRef(ref);
+    const p = editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     const saved = await saveCrop(baseDir, projectId, crop);
@@ -442,7 +495,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.segSave, async (_e, ref: unknown, snapshot: unknown) => {
-    const p = resolveRef(ref);
+    const p = editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     try {
@@ -465,7 +518,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.exportRun, async (event, ref: unknown) => {
-    const p = resolveRef(ref);
+    const p = editable(ref);
     if (!p) return null;
     const { baseDir, id: projectId } = p;
     const send = (p: ExportProgress) => event.sender.send(IPC.exportProgress, p);
@@ -498,7 +551,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.framesRemove, async (_e, ref: unknown, frameIds: unknown): Promise<string[]> => {
-    const p = resolveRef(ref);
+    const p = editable(ref);
     if (!p || !Array.isArray(frameIds)) return [];
     const names = frameIds.filter((f): f is string => typeof f === "string");
     return removeFrames(p.baseDir, p.id, names);

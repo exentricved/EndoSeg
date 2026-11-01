@@ -6,6 +6,7 @@ import {
   type ExportProgress,
   type PhaseExportProgress,
   type UpdateStatus,
+  type ReviewProgress,
 } from "../src/shared/ipc.js";
 
 // Minimal, explicit bridge. The renderer gets only these async methods —
@@ -19,6 +20,13 @@ const api: EndoSegApi = {
   getProject: (id) => ipcRenderer.invoke(IPC.projectGet, id),
   revealProject: (id) => ipcRenderer.invoke(IPC.projectReveal, id),
   deleteProject: (id) => ipcRenderer.invoke(IPC.projectDelete, id),
+  getAccess: (id) => ipcRenderer.invoke(IPC.projectAccess, id),
+  startSecondReview: (id) => ipcRenderer.invoke(IPC.reviewStart, id),
+  onReviewProgress: (cb) => {
+    const listener = (_e: IpcRendererEvent, p: ReviewProgress) => cb(p);
+    ipcRenderer.on(IPC.reviewProgress, listener);
+    return () => ipcRenderer.removeListener(IPC.reviewProgress, listener);
+  },
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
   updateSettings: (patch) => ipcRenderer.invoke(IPC.settingsUpdate, patch),
   pickVideo: () => ipcRenderer.invoke(IPC.intakePickVideo),
