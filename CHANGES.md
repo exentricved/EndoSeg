@@ -1,4 +1,4 @@
-# EndoSeg — unreleased
+# EndoSeg — v0.3.0 (2026-11-02)
 
 ## Everything on the NAS: Raw → Annotated 1 → Annotated 2
 - The home screen (**Cases**) has three tabs, each showing a NAS folder: **Raw** (`Raw ERCP Videos`), **Annotated 1** and **Annotated 2**. Every install reads the same folders, so everyone sees the same cases.
