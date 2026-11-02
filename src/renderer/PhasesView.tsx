@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { errorText } from "./ui.js";
 import {
   PHASES,
   MANEUVERS,
@@ -100,7 +101,7 @@ export function PhasesView({
   useEffect(() => () => {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
-      void window.endoseg.savePhases(projectId, labelsRef.current);
+      window.endoseg.savePhases(projectId, labelsRef.current).catch(() => undefined); // refusal shows as the lock warning
     }
   }, [projectId]);
 
@@ -200,12 +201,34 @@ export function PhasesView({
     return () => window.removeEventListener("keydown", onKey);
   }, [markPhase, markManeuver, markSuccess, cancelOpen, togglePlay, seek, frameStep, selected, deleteSpan]);
 
+  // Save any pending edit before leaving; if it is refused, stay and say why.
+  const leave = useCallback(async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      try {
+        await window.endoseg.savePhases(projectId, labelsRef.current);
+      } catch (err) {
+        setSaveState("error");
+        setMessage(`Not saved: ${errorText(err)}`);
+        return;
+      }
+    }
+    onBack();
+  }, [projectId, onBack]);
+
   const runExport = useCallback(async () => {
     setConfirmExport(false);
     setMessage(null);
     // Make sure the latest labels are on disk before exporting from them.
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
-    await window.endoseg.savePhases(projectId, labelsOf(spans, success));
+    try {
+      await window.endoseg.savePhases(projectId, labelsOf(spans, success));
+    } catch (err) {
+      setSaveState("error");
+      setMessage(`Not saved: ${errorText(err)}`);
+      return;
+    }
     loadedSpans.current = spans;
     loadedSuccess.current = success;
     setSaveState("saved");
@@ -220,6 +243,8 @@ export function PhasesView({
           ? `Export failed: ${st.error ?? "unknown error"}`
           : `Exported ${st.counts?.clips ?? 0} clips and ${st.counts?.frames ?? 0} frames for segmentation.`);
       }
+    } catch (err) {
+      setMessage(`Export not started: ${errorText(err)}`);
     } finally {
       unsub();
       setExporting(null);
@@ -246,7 +271,7 @@ export function PhasesView({
   return (
     <div className="phases">
       <div className="phases-bar">
-        <button className="secondary" onClick={onBack} disabled={!!exporting}>← Back to project</button>
+        <button className="secondary" onClick={() => void leave()} disabled={!!exporting}>← Back to project</button>
         <strong>Phases</strong>
         <span className="muted" style={{ fontSize: 12 }}>{state.caseName ?? projectId}</span>
         <span className="spacer" />
@@ -478,7 +503,7 @@ export function PhasesView({
                   {exportLabel ?? "Export clips + frames"}
                 </button>
               )}
-              {message && <span className={message.startsWith("Export failed") ? "warn" : "muted hint"}>{message}</span>}
+              {message && <span className={/^(Export failed|Export not started|Not saved)/.test(message) ? "warn" : "muted hint"}>{message}</span>}
               <button className="secondary" onClick={() => void window.endoseg.revealPhases(projectId)}>Open export folder</button>
             </div>
           </aside>

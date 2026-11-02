@@ -3,7 +3,7 @@
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { caseNameFromSource, safeFolderName } from "../core/phases.js";
+import { safeFolderName } from "../core/phases.js";
 import { isVideoFile, type RawCase, type RawVideo } from "../core/workspaces.js";
 
 async function videoAt(dir: string, file: string): Promise<RawVideo | null> {
@@ -40,14 +40,29 @@ export async function listRawCases(rawDir: string): Promise<RawCase[]> {
           return;
         }
         const videos = (await Promise.all(files.map((f) => videoAt(dir, f)))).filter((v): v is RawVideo => !!v);
-        cases.push({ name: e.name, caseId: caseNameFromSource(path.join(dir, "x.mp4")), videos });
+        cases.push({ name: e.name, caseId: safeFolderName(e.name), videos });
       } else if (e.isFile() && isVideoFile(e.name)) {
         const v = await videoAt(rawDir, e.name);
-        if (v) cases.push({ name: e.name, caseId: safeFolderName(e.name.replace(/\.[^.]+$/, "")), videos: [v] });
+        if (v) cases.push({ name: e.name, caseId: looseVideoCaseId(e.name), videos: [v] });
       }
     }),
   );
   return cases.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
+
+/** A loose video at the root of the Raw folder is a case named after the file. */
+function looseVideoCaseId(file: string): string {
+  return safeFolderName(file.replace(/\.[^.]+$/, ""));
+}
+
+/**
+ * The case id (Annotated folder name) for a video in the Raw folder: its
+ * sub-folder's name, or the file name for a loose video at the root. The same
+ * rule the Raw tab lists cases by.
+ */
+export function rawCaseId(rawDir: string, videoPath: string): string {
+  const parent = path.dirname(path.resolve(videoPath));
+  return parent === path.resolve(rawDir) ? looseVideoCaseId(path.basename(videoPath)) : safeFolderName(path.basename(parent));
 }
 
 /** True if `p` is inside `dir` (after normalizing), so a renderer can't point intake elsewhere. */

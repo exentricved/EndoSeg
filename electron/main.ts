@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from "electron";
-import { promises as fs, existsSync, createReadStream } from "node:fs";
-import { Readable } from "node:stream";
+import { app, BrowserWindow, ipcMain, dialog, shell, type IpcMainInvokeEvent } from "electron";
+import { promises as fs, existsSync } from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
+import { randomUUID } from "node:crypto";
 import ffmpegPath from "ffmpeg-static";
 import { path as ffprobePathRaw } from "ffprobe-static";
 import {
@@ -17,18 +18,11 @@ import {
   type CaseAccess,
   type ReviewStartResult,
 } from "../src/shared/ipc.js";
+import type { ProjectManifest, StageId, StageState, StageStatus } from "../src/core/stages.js";
 import { startSecondReview, isInReview } from "../src/node/review.js";
-import {
-  acquireLock,
-  heartbeat,
-  releaseLock,
-  foreignLock,
-  holderLabel,
-  HEARTBEAT_MS,
-  type Me,
-} from "../src/node/caselock.js";
-import { randomUUID } from "node:crypto";
-import * as os from "node:os";
+import { foreignLock, holderLabel, LOCK_FILE, type Me } from "../src/node/caselock.js";
+import { CaseSession, CaseLockedError } from "../src/node/session.js";
+import { caseAccess, reviewAccess } from "../src/node/access.js";
 import {
   claimProjectOnDisk,
   AlreadyExistsError,
@@ -40,7 +34,7 @@ import {
   deleteProjectOnDisk,
   type LibraryCheck,
 } from "../src/node/library.js";
-import { listRawCases, isInside } from "../src/node/raw.js";
+import { listRawCases, isInside, rawCaseId } from "../src/node/raw.js";
 import {
   NAS_FOLDERS,
   DEFAULT_NAS_ROOT,
@@ -60,16 +54,15 @@ import {
   loadCrop,
   saveCrop,
 } from "../src/node/phases.js";
-import { caseNameFromSource, safeFolderName } from "../src/core/phases.js";
 import {
   listSegFrames,
   loadSegmentationSnapshot,
   saveSegmentationSnapshot,
-  resolveFramePath,
   removeFrames,
 } from "../src/node/segmentation.js";
 import { runExport } from "../src/node/export.js";
 import { setupUpdater, checkForUpdates } from "./updater.js";
+import { registerSchemes, handleSchemes } from "./protocols.js";
 import {
   type Settings,
   loadSettings,
@@ -81,26 +74,17 @@ import { CrashLogger } from "../src/node/crashlog.js";
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 const DEV_URL = process.env.VITE_DEV_SERVER_URL ?? "http://localhost:5234";
 
-// Privileged scheme that streams a project's frames to the renderer on demand
-// (lazy — avoids base64-loading thousands of full-res frames). Must be declared
-// before app "ready".
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: "endoseg-frame",
-    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
-  },
-  // The project's intake video (or its preview proxy) for the phase-labelling player.
-  {
-    scheme: "endoseg-video",
-    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
-  },
-]);
+// Must be declared before app "ready".
+registerSchemes();
 
 let mainWindow: BrowserWindow | null = null;
-let frameServeCount = 0;
 let crashLogger: CrashLogger;
 let settings: Settings;
 let nasCheck: LibraryCheck = { writable: false };
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
 
 // ── Settings + NAS folders ───────────────────────────────────────────────────
 
@@ -157,39 +141,32 @@ function resolveRef(ref: unknown): Resolved | null {
   return r ? { ws: r.ws, baseDir: workspaceDir(r.ws), id: r.id, ref: makeRef(r.ws, r.id) } : null;
 }
 
+function caseDirOf(p: Resolved): string {
+  return projectDir(p.baseDir, p.id);
+}
+
 /** Clips live inside the case folder: <case>\clips\<case>_<phase>\. */
 function clipsRootFor(p: Resolved): string {
-  return path.join(projectDir(p.baseDir, p.id), "clips");
+  return path.join(caseDirOf(p), "clips");
 }
 
 /** Where a project's exports go: custom root (per-project subfolder) or 03_export. */
 function exportRootFor(p: Resolved): string {
-  return settings.exportDir
-    ? path.join(settings.exportDir, p.id)
-    : path.join(projectDir(p.baseDir, p.id), "03_export");
+  return settings.exportDir ? path.join(settings.exportDir, p.id) : path.join(caseDirOf(p), "03_export");
 }
 
-async function workspacesState(): Promise<WorkspacesState> {
-  const ok = nasCheck.writable;
-  const [raw, a1, a2] = ok
-    ? await Promise.all([listRawCases(rawVideosDir()), listProjects(workspaceDir("a1")), listProjects(workspaceDir("a2"))])
-    : [[], [], []];
-  return {
-    nasRoot: nasRoot(),
-    folders: { raw: rawVideosDir(), a1: workspaceDir("a1"), a2: workspaceDir("a2") },
-    rawFound: ok && existsSync(rawVideosDir()),
-    raw: rawRows(raw, a1, a2),
-    a1,
-    a2,
-    a1InReview: a1.filter((p) => isInReview(workspaceDir("a2"), p.id)).map((p) => p.id),
-    openBy: ok ? await openByMap(a1, a2) : {},
-    ...nasCheck,
-  };
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-// ── Open-case lock ───────────────────────────────────────────────────────────
+// ── Open-case lock and access ────────────────────────────────────────────────
 
-/** This app run. The lock shows the computer and Windows user, nothing is kept after closing. */
+/** This app run. The lock shows the computer and Windows user; nothing is kept after closing. */
 const me: Me = (() => {
   let user = "";
   try {
@@ -200,92 +177,112 @@ const me: Me = (() => {
   return { sessionId: randomUUID(), computer: os.hostname(), user };
 })();
 
-/** The case this app has open (one at a time), and its heartbeat timer. */
-let held: { ref: string; dir: string } | null = null;
-let heartbeatTimer: NodeJS.Timeout | null = null;
-
-function caseDirOf(p: Resolved): string {
-  return projectDir(p.baseDir, p.id);
+function notifyAccess(ref: string, access: CaseAccess): void {
+  mainWindow?.webContents.send(IPC.caseAccessChanged, { ref, access });
 }
 
-async function closeHeld(): Promise<void> {
-  if (heartbeatTimer) clearInterval(heartbeatTimer);
-  heartbeatTimer = null;
-  const h = held;
-  held = null;
-  if (h) await releaseLock(h.dir, me.sessionId);
+const session = new CaseSession(me, {
+  // Someone took the case over: tell the renderer, which stops offering edits.
+  onLost: (ref) => {
+    const p = resolveRef(ref);
+    if (p) void accessOf(p).then((a) => notifyAccess(ref, a.readOnly ? a : { readOnly: true, reason: "This case was taken over on another computer." }));
+  },
+});
+
+/**
+ * Annotated 1 cases are read-only while they have a copy in Annotated 2, and
+ * any case is read-only while someone else has it open.
+ */
+function accessOf(p: Resolved): Promise<CaseAccess> {
+  return caseAccess({ ws: p.ws, id: p.id, caseDir: caseDirOf(p), a2Dir: workspaceDir("a2"), sessionId: me.sessionId, nowMs: Date.now() });
 }
 
-function startHeartbeat(): void {
-  if (heartbeatTimer) clearInterval(heartbeatTimer);
-  heartbeatTimer = setInterval(() => {
-    const h = held;
-    if (!h) return;
-    void heartbeat(h.dir, me.sessionId, Date.now())
-      .then(async (stillMine) => {
-        if (stillMine || held !== h) return;
-        // Someone took the case over: stop saving and tell the renderer.
-        held = null;
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-        const p = resolveRef(h.ref);
-        if (p) mainWindow?.webContents.send(IPC.caseAccessChanged, { ref: h.ref, access: await accessOf(p) });
-      })
-      .catch(() => undefined); // NAS blip: try again next beat
-  }, HEARTBEAT_MS);
-}
-
-async function openByMap(a1: { id: string }[], a2: { id: string }[]): Promise<Record<string, string>> {
+async function openByMap(refs: string[]): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   const now = Date.now();
-  const all = [...a1.map((c) => makeRef("a1", c.id)), ...a2.map((c) => makeRef("a2", c.id))];
   await Promise.all(
-    all.map(async (ref) => {
+    refs.map(async (ref) => {
       const p = resolveRef(ref);
-      const l = p && (await foreignLock(caseDirOf(p), me.sessionId, now));
+      const l = p && (await foreignLock(caseDirOf(p), me.sessionId, now).catch(() => null));
       if (l) out[ref] = holderLabel(l);
     }),
   );
   return out;
 }
 
+const CASE_MISSING =
+  "This case's folder can't be reached on the NAS (it was deleted, or the network drive dropped). The change was not saved.";
+
 /**
- * Annotated 1 cases are read-only while they have a copy in Annotated 2, and
- * any case is read-only while someone else has it open.
+ * Register a handler that changes a case. It runs only if the case may be
+ * changed here, and holds the case's lock until it finishes (see CaseSession).
+ * Every handler that writes into a case folder must be registered this way.
  */
-async function accessOf(p: Resolved): Promise<CaseAccess> {
-  if (p.ws === "a1" && isInReview(workspaceDir("a2"), p.id)) {
-    return {
-      readOnly: true,
-      reason: "This case is in second review. Its Annotated 1 copy is kept unchanged as the record of the first pass; edit the Annotated 2 copy instead.",
-      reviewRef: makeRef("a2", p.id),
-    };
-  }
-  const l = await foreignLock(caseDirOf(p), me.sessionId, Date.now());
-  if (l) {
-    return {
-      readOnly: true,
-      reason: `${holderLabel(l)} has this case open, so you can't change it here.`,
-      lockedBy: holderLabel(l),
-      lockedSince: l.openedAt,
-    };
-  }
-  return { readOnly: false };
+function handleWrite<R>(
+  channel: string,
+  fallback: R,
+  fn: (event: IpcMainInvokeEvent, p: Resolved, ...args: unknown[]) => Promise<R>,
+): void {
+  ipcMain.handle(channel, async (event, ref: unknown, ...args: unknown[]): Promise<R> => {
+    const p = resolveRef(ref);
+    if (!p) return fallback;
+    const dir = caseDirOf(p);
+    try {
+      // Joins the session's queue straight away, so a Back sent just after this
+      // write can't release the lock before the write has it.
+      return await session.run(p.ref, dir, async () => {
+        const a = await accessOf(p);
+        if (a.readOnly) throw new Error(a.reason);
+        return fn(event, p, ...args);
+      });
+    } catch (err) {
+      if (err instanceof CaseLockedError) throw new Error(err.message);
+      if (!(await pathExists(dir))) throw new Error(CASE_MISSING);
+      throw err;
+    }
+  });
 }
 
-/** Resolve a ref for a write; throws if the case is read-only (backstop for the UI). */
-async function editable(ref: unknown): Promise<Resolved | null> {
-  const p = resolveRef(ref);
-  if (!p) return null;
-  const a = await accessOf(p);
-  if (a.readOnly) throw new Error(a.reason);
-  return p;
+type StagePatch = Partial<StageState> & { status: StageStatus };
+
+/**
+ * Run a stage's work and record the result on the manifest: the patch it
+ * returns, or the error (also written to the crash log).
+ */
+async function runStage(p: Resolved, stage: StageId, work: () => Promise<StagePatch>, markStarted = false): Promise<ProjectManifest | null> {
+  try {
+    if (markStarted) await updateStageOnDisk(p.baseDir, p.id, stage, { status: "in_progress" }, nowIso());
+    return await updateStageOnDisk(p.baseDir, p.id, stage, await work(), nowIso());
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    await crashLogger.record({ source: stage, message: e.message, detail: e.stack, projectId: p.id, stage }, nowIso());
+    return updateStageOnDisk(p.baseDir, p.id, stage, { status: "error", error: e.message }, nowIso());
+  }
 }
 
-// ── Crash handling ───────────────────────────────────────────────────────────
+/** Open a folder of the case, creating it only if the case may be changed here. */
+async function revealDir(p: Resolved, dir: string): Promise<void> {
+  if (!(await pathExists(dir))) {
+    const caseDir = caseDirOf(p);
+    if (!(await pathExists(caseDir))) return;
+    const made = await session
+      .run(p.ref, caseDir, async () => {
+        if ((await accessOf(p)).readOnly) return false;
+        await fs.mkdir(dir, { recursive: true });
+        return true;
+      })
+      .catch(() => false);
+    if (!made) {
+      await shell.openPath(caseDir);
+      return;
+    }
+  }
+  await shell.openPath(dir);
+}
 
-function nowIso(): string {
-  return new Date().toISOString();
+function bundledFfmpeg(): string {
+  if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
+  return resolveBinary(ffmpegPath);
 }
 
 /** In a packaged app the bundled binaries are unpacked from the asar archive. */
@@ -293,19 +290,35 @@ function resolveBinary(p: string): string {
   return app.isPackaged ? p.replace("app.asar", "app.asar.unpacked") : p;
 }
 
+async function workspacesState(): Promise<WorkspacesState> {
+  const ok = nasCheck.writable;
+  const [raw, a1, a2] = ok
+    ? await Promise.all([listRawCases(rawVideosDir()), listProjects(workspaceDir("a1")), listProjects(workspaceDir("a2"))])
+    : [[], [], []];
+  const now = Date.now();
+  const inReview = await Promise.all(a1.map((p) => isInReview(workspaceDir("a2"), p.id, now).catch(() => true)));
+  return {
+    nasRoot: nasRoot(),
+    folders: { raw: rawVideosDir(), a1: workspaceDir("a1"), a2: workspaceDir("a2") },
+    rawFound: ok && existsSync(rawVideosDir()),
+    raw: rawRows(raw, a1, a2),
+    a1,
+    a2,
+    a1InReview: a1.filter((_, i) => inReview[i]).map((p) => p.id),
+    openBy: ok ? await openByMap([...a1.map((c) => makeRef("a1", c.id)), ...a2.map((c) => makeRef("a2", c.id))]) : {},
+    ...nasCheck,
+  };
+}
+
+// ── Crash handling ───────────────────────────────────────────────────────────
+
 function installCrashHandlers(): void {
   process.on("uncaughtException", (err) => {
-    void crashLogger.record(
-      { source: "uncaughtException", message: err.message, detail: err.stack },
-      nowIso(),
-    );
+    void crashLogger.record({ source: "uncaughtException", message: err.message, detail: err.stack }, nowIso());
   });
   process.on("unhandledRejection", (reason) => {
     const err = reason instanceof Error ? reason : new Error(String(reason));
-    void crashLogger.record(
-      { source: "unhandledRejection", message: err.message, detail: err.stack },
-      nowIso(),
-    );
+    void crashLogger.record({ source: "unhandledRejection", message: err.message, detail: err.stack }, nowIso());
   });
   app.on("render-process-gone", (_e, _wc, details) => {
     void crashLogger.record(
@@ -314,10 +327,7 @@ function installCrashHandlers(): void {
     );
   });
   app.on("child-process-gone", (_e, details) => {
-    void crashLogger.record(
-      { source: "child-process-gone", message: `child gone: ${details.type} ${details.reason}` },
-      nowIso(),
-    );
+    void crashLogger.record({ source: "child-process-gone", message: `child gone: ${details.type} ${details.reason}` }, nowIso());
   });
 }
 
@@ -332,36 +342,13 @@ function appInfo(): AppInfo {
   };
 }
 
-function registerIpc(): void {
+/** App, settings, NAS and troubleshooting. */
+function registerAppIpc(): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => appInfo());
 
   ipcMain.handle(IPC.workspacesGet, async () => {
     await checkNas(); // re-check: the NAS may have (re)connected
     return workspacesState();
-  });
-
-  // Raw tab → Start intake: claim the case folder in Annotated 1 (atomic, so two
-  // people can't both start it), then the renderer runs intake on the video.
-  ipcMain.handle(IPC.rawStart, async (_e, videoPath: unknown): Promise<StartFromRawResult> => {
-    if (typeof videoPath !== "string" || !isInside(rawVideosDir(), videoPath) || !existsSync(videoPath)) {
-      return { ok: false, error: "That video is not in the Raw ERCP Videos folder any more. Refresh and try again." };
-    }
-    const looseAtRoot = path.dirname(path.resolve(videoPath)) === path.resolve(rawVideosDir());
-    const caseId = looseAtRoot
-      ? safeFolderName(path.basename(videoPath).replace(/\.[^.]+$/, ""))
-      : caseNameFromSource(videoPath);
-    if (!isSafeCaseId(caseId)) {
-      return { ok: false, error: `The folder name "${caseId}" can't be used as a case name (it starts with "_" or "."). Rename it in Raw ERCP Videos first.` };
-    }
-    try {
-      await claimProjectOnDisk(workspaceDir("a1"), caseId, caseId, nowIso());
-      return { ok: true, ref: makeRef("a1", caseId) };
-    } catch (err) {
-      if (err instanceof AlreadyExistsError) return { ok: false, error: err.message, ref: makeRef("a1", caseId) };
-      const e = err instanceof Error ? err : new Error(String(err));
-      await crashLogger.record({ source: "intake", message: e.message, detail: e.stack, stage: "intake" }, nowIso());
-      return { ok: false, error: e.message };
-    }
   });
 
   ipcMain.handle(IPC.nasChooseRoot, async (): Promise<Settings | null> => {
@@ -387,6 +374,47 @@ function registerIpc(): void {
     return settings;
   });
 
+  ipcMain.handle(IPC.settingsGet, (): Settings => settings);
+
+  ipcMain.handle(IPC.settingsUpdate, async (_e, patch: unknown): Promise<Settings> => {
+    settings = applySettings(settings, patch);
+    await saveSettings(settingsPath(), settings);
+    await checkNas();
+    return settings;
+  });
+
+  ipcMain.handle(IPC.updateCheck, (): Promise<UpdateStatus> => checkForUpdates(app.isPackaged));
+
+  ipcMain.handle(IPC.crashList, () => crashLogger.list());
+  ipcMain.handle(IPC.crashRead, (_e, file: unknown) => (typeof file === "string" ? crashLogger.read(file) : null));
+  ipcMain.handle(IPC.crashOpenFolder, () => {
+    void shell.openPath(crashLogger.directory);
+  });
+}
+
+/** Cases: start, open/close (lock), second review, delete. */
+function registerCaseIpc(): void {
+  // Raw tab → Start intake: claim the case folder in Annotated 1 (atomic, so two
+  // people can't both start it), then the renderer runs intake on the video.
+  ipcMain.handle(IPC.rawStart, async (_e, videoPath: unknown): Promise<StartFromRawResult> => {
+    if (typeof videoPath !== "string" || !isInside(rawVideosDir(), videoPath) || !existsSync(videoPath)) {
+      return { ok: false, error: "That video is not in the Raw ERCP Videos folder any more. Refresh and try again." };
+    }
+    const caseId = rawCaseId(rawVideosDir(), videoPath);
+    if (!isSafeCaseId(caseId)) {
+      return { ok: false, error: `The folder name "${caseId}" can't be used as a case name (it starts with "_" or "."). Rename it in Raw ERCP Videos first.` };
+    }
+    try {
+      await claimProjectOnDisk(workspaceDir("a1"), caseId, caseId, nowIso());
+      return { ok: true, ref: makeRef("a1", caseId) };
+    } catch (err) {
+      if (err instanceof AlreadyExistsError) return { ok: false, error: err.message, ref: makeRef("a1", caseId) };
+      const e = err instanceof Error ? err : new Error(String(err));
+      await crashLogger.record({ source: "intake", message: e.message, detail: e.stack, stage: "intake" }, nowIso());
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle(IPC.projectGet, (_e, ref: unknown) => {
     const p = resolveRef(ref);
     return p ? readManifest(p.baseDir, p.id) : null;
@@ -394,7 +422,7 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.projectReveal, async (_e, ref: unknown) => {
     const p = resolveRef(ref);
-    if (p) shell.showItemInFolder(path.join(projectDir(p.baseDir, p.id), "project.json"));
+    if (p) shell.showItemInFolder(path.join(caseDirOf(p), "project.json"));
   });
 
   ipcMain.handle(IPC.projectAccess, async (_e, ref: unknown): Promise<CaseAccess> => {
@@ -405,63 +433,81 @@ function registerIpc(): void {
   ipcMain.handle(IPC.caseOpen, async (_e, ref: unknown, takeOver: unknown): Promise<CaseAccess> => {
     const p = resolveRef(ref);
     if (!p) return { readOnly: true, reason: "Unknown case." };
-    if (held && held.ref !== p.ref) await closeHeld();
-    // A case in second review stays read-only in Annotated 1; no lock needed.
-    if (p.ws === "a1" && isInReview(workspaceDir("a2"), p.id)) return accessOf(p);
     const dir = caseDirOf(p);
-    if (!existsSync(dir)) return { readOnly: true, reason: "This case's folder can't be found." };
-    try {
-      const r = await acquireLock(dir, me, Date.now(), takeOver === true);
-      if (!r.ok) return accessOf(p);
-      held = { ref: p.ref, dir };
-      startHeartbeat();
-      return { readOnly: false };
-    } catch (err) {
-      return { readOnly: true, reason: `Can't open the case for editing: ${(err as Error).message}` };
-    }
+    const result = await (async (): Promise<CaseAccess> => {
+      // A case in second review stays read-only in Annotated 1: no lock needed.
+      const review = await reviewAccess({ ws: p.ws, id: p.id, a2Dir: workspaceDir("a2"), nowMs: Date.now() }).catch(
+        (err: Error): CaseAccess => ({ readOnly: true, reason: `The case can't be read on the NAS right now (${err.message}). Check the network drive and try again.` }),
+      );
+      if (review) {
+        await session.close();
+        return review;
+      }
+      if (!(await pathExists(dir))) {
+        await session.close();
+        return { readOnly: true, reason: "This case's folder can't be found." };
+      }
+      try {
+        const r = await session.open(p.ref, dir, takeOver === true);
+        if (r.ok) return { readOnly: false };
+        // Not ours: never report editable without the lock, even if it was just released.
+        const l = r.holder;
+        return {
+          readOnly: true,
+          reason: `${holderLabel(l)} has this case open, so you can't change it here.`,
+          lockedBy: holderLabel(l),
+          lockedSince: l.openedAt,
+        };
+      } catch (err) {
+        return { readOnly: true, reason: `Can't open the case for editing: ${(err as Error).message}` };
+      }
+    })();
+    // Clears a "taken over" warning once the case is ours again.
+    if (!result.readOnly) notifyAccess(p.ref, result);
+    return result;
   });
 
-  ipcMain.handle(IPC.caseClose, () => closeHeld());
+  ipcMain.handle(IPC.caseClose, () => session.close());
 
   // Annotated 1 → Second review: full verified copy into Annotated 2.
   ipcMain.handle(IPC.reviewStart, async (event, ref: unknown): Promise<ReviewStartResult> => {
     const p = resolveRef(ref);
     if (!p || p.ws !== "a1") return { ok: false, error: "Second review starts from a case in Annotated 1." };
     if (!nasCheck.writable) return { ok: false, error: nasCheck.error ?? "The NAS folder can't be reached." };
-    const open = await foreignLock(caseDirOf(p), me.sessionId, Date.now());
-    if (open) return { ok: false, error: `${holderLabel(open)} has this case open. Ask them to close it first, so the review starts from their finished work.` };
     try {
-      await startSecondReview({
-        a1Dir: workspaceDir("a1"),
-        a2Dir: workspaceDir("a2"),
-        id: p.id,
-        now: nowIso(),
-        appVersion: app.getVersion(),
-        onProgress: (pr) => event.sender.send(IPC.reviewProgress, pr),
-      });
+      // Hold the Annotated 1 case's lock for the whole copy, so nobody edits it meanwhile.
+      await session.run(p.ref, caseDirOf(p), () =>
+        startSecondReview({
+          a1Dir: workspaceDir("a1"),
+          a2Dir: workspaceDir("a2"),
+          id: p.id,
+          now: nowIso(),
+          appVersion: app.getVersion(),
+          onProgress: (pr) => event.sender.send(IPC.reviewProgress, pr),
+        }),
+      );
       return { ok: true, ref: makeRef("a2", p.id) };
     } catch (err) {
       if (err instanceof AlreadyExistsError) return { ok: false, error: err.message, ref: makeRef("a2", p.id) };
+      if (err instanceof CaseLockedError) {
+        return { ok: false, error: `${holderLabel(err.holder)} has this case open. Ask them to close it first, so the review starts from their finished work.` };
+      }
       const e = err instanceof Error ? err : new Error(String(err));
       await crashLogger.record({ source: "review", message: e.message, detail: e.stack, projectId: p.id }, nowIso());
       return { ok: false, error: e.message };
     }
   });
 
-  ipcMain.handle(IPC.projectDelete, async (_e, ref: unknown): Promise<boolean> => {
-    const p = await editable(ref);
-    return p ? (await deleteProjectOnDisk(p.baseDir, p.id, nowIso())) !== null : false;
+  handleWrite(IPC.projectDelete, false, async (_e, p) => {
+    const moved = await deleteProjectOnDisk(p.baseDir, p.id, nowIso());
+    // The lock taken for the delete moved with the folder: drop it there.
+    if (moved) await fs.rm(path.join(moved, LOCK_FILE), { force: true }).catch(() => undefined);
+    return moved !== null;
   });
+}
 
-  ipcMain.handle(IPC.settingsGet, (): Settings => settings);
-
-  ipcMain.handle(IPC.settingsUpdate, async (_e, patch: unknown): Promise<Settings> => {
-    settings = applySettings(settings, patch);
-    await saveSettings(settingsPath(), settings);
-    await checkNas();
-    return settings;
-  });
-
+/** Intake, phases, crop, segmentation and export inside one case. */
+function registerStageIpc(): void {
   ipcMain.handle(IPC.intakePickVideo, async (): Promise<string | null> => {
     const res = await dialog.showOpenDialog(mainWindow!, {
       title: "Select ERCP video",
@@ -475,119 +521,80 @@ function registerIpc(): void {
     return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
   });
 
-  ipcMain.handle(IPC.intakeRun, async (_e, ref: unknown, sourcePath: unknown) => {
-    const p = await editable(ref);
-    if (!p || typeof sourcePath !== "string") return null;
-    const { baseDir, id: projectId } = p;
-    if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
-    const send = (p: IntakeProgress) => mainWindow?.webContents.send(IPC.intakeProgress, p);
-    try {
-      await updateStageOnDisk(baseDir, projectId, "intake", { status: "in_progress" }, nowIso());
-      const record = await runIntake({
-        baseDir: baseDir,
-        projectId,
-        sourcePath,
-        ffmpegPath: resolveBinary(ffmpegPath),
-        ffprobePath: resolveBinary(ffprobePathRaw),
-        now: nowIso(),
-        onProgress: send,
-      });
-      return await updateStageOnDisk(
-        baseDir,
-        projectId,
-        "intake",
-        { status: "done", counts: { sources: 1, minutes: Math.round(record.meta.durationSec / 6) / 10 } },
-        nowIso(),
-      );
-    } catch (err) {
-      const e = err instanceof Error ? err : new Error(String(err));
-      await crashLogger.record(
-        { source: "intake", message: e.message, detail: e.stack, projectId, stage: "intake" },
-        nowIso(),
-      );
-      return updateStageOnDisk(baseDir, projectId, "intake", { status: "error", error: e.message }, nowIso());
-    }
+  handleWrite(IPC.intakeRun, null, async (_e, p, sourcePath) => {
+    if (typeof sourcePath !== "string") return null;
+    const ffmpeg = bundledFfmpeg();
+    return runStage(
+      p,
+      "intake",
+      async () => {
+        const record = await runIntake({
+          baseDir: p.baseDir,
+          projectId: p.id,
+          sourcePath,
+          ffmpegPath: ffmpeg,
+          ffprobePath: resolveBinary(ffprobePathRaw),
+          now: nowIso(),
+          onProgress: (pr: IntakeProgress) => mainWindow?.webContents.send(IPC.intakeProgress, pr),
+        });
+        return { status: "done", counts: { sources: 1, minutes: Math.round(record.meta.durationSec / 6) / 10 } };
+      },
+      true,
+    );
   });
 
   ipcMain.handle(IPC.phasesLoad, async (_e, ref: unknown): Promise<PhasesState | null> => {
     const p = resolveRef(ref);
     if (!p) return null;
-    const { baseDir, id: projectId } = p;
-    const intake = await readIntakeRecord(baseDir, projectId);
+    const intake = await readIntakeRecord(p.baseDir, p.id);
     return {
-      labels: await loadPhaseLabels(baseDir, projectId),
+      labels: await loadPhaseLabels(p.baseDir, p.id),
       videoUrl: intake?.playbackFile ? `endoseg-video://video/${encodeURIComponent(p.ref)}` : null,
       durationSec: intake?.meta.durationSec ?? 0,
       fps: intake?.meta.fps ?? 0,
       width: intake?.meta.width ?? 0,
       height: intake?.meta.height ?? 0,
-      crop: await loadCrop(baseDir, projectId, intake),
-      caseName: intake ? caseNameFromSource(intake.sourcePath) : null,
+      crop: await loadCrop(p.baseDir, p.id, intake),
+      caseName: intake ? p.id : null,
       exportRoot: clipsRootFor(p),
     };
   });
 
-  ipcMain.handle(IPC.phasesSave, async (_e, ref: unknown, labels: unknown) => {
-    const p = await editable(ref);
-    if (!p) return null;
-    const { baseDir, id: projectId } = p;
-    const saved = await savePhaseLabels(baseDir, projectId, labels);
+  handleWrite(IPC.phasesSave, null, async (_e, p, labels) => {
+    const saved = await savePhaseLabels(p.baseDir, p.id, labels);
     // Edited labels mean the clips/frames on disk are stale until re-exported.
-    await updateStageOnDisk(baseDir, projectId, "phases", { status: "in_progress", counts: { spans: saved.spans.length } }, nowIso());
+    await updateStageOnDisk(p.baseDir, p.id, "phases", { status: "in_progress", counts: { spans: saved.spans.length } }, nowIso());
     return saved;
   });
 
-  ipcMain.handle(IPC.phasesExport, async (event, ref: unknown) => {
-    const p = await editable(ref);
-    if (!p) return null;
-    const { baseDir, id: projectId } = p;
-    if (!ffmpegPath) throw new Error("Bundled ffmpeg not found");
-    const send = (p: PhaseExportProgress) => event.sender.send(IPC.phasesProgress, p);
-    try {
+  handleWrite(IPC.phasesExport, null, async (event, p) => {
+    const ffmpeg = bundledFfmpeg();
+    return runStage(p, "phases", async () => {
       const r = await runPhaseExport({
-        baseDir: baseDir,
-        projectId,
-        ffmpegPath: resolveBinary(ffmpegPath),
+        baseDir: p.baseDir,
+        projectId: p.id,
+        ffmpegPath: ffmpeg,
         exportRoot: clipsRootFor(p),
         fps: settings.phaseFps,
-        onProgress: send,
+        onProgress: (pr: PhaseExportProgress) => event.sender.send(IPC.phasesProgress, pr),
       });
-      return await updateStageOnDisk(
-        baseDir,
-        projectId,
-        "phases",
-        { status: "done", counts: { clips: r.clips, frames: r.frames } },
-        nowIso(),
-      );
-    } catch (err) {
-      const e = err instanceof Error ? err : new Error(String(err));
-      await crashLogger.record(
-        { source: "phases", message: e.message, detail: e.stack, projectId, stage: "phases" },
-        nowIso(),
-      );
-      return updateStageOnDisk(baseDir, projectId, "phases", { status: "error", error: e.message }, nowIso());
-    }
+      return { status: "done", counts: { clips: r.clips, frames: r.frames } };
+    });
   });
 
-  ipcMain.handle(IPC.cropSave, async (_e, ref: unknown, crop: unknown) => {
-    const p = await editable(ref);
-    if (!p) return null;
-    const { baseDir, id: projectId } = p;
-    const saved = await saveCrop(baseDir, projectId, crop);
+  handleWrite(IPC.cropSave, null, async (_e, p, crop) => {
+    const saved = await saveCrop(p.baseDir, p.id, crop);
     // Clips/frames already exported used the old crop — flag the stage for re-export.
-    const m = await readManifest(baseDir, projectId);
+    const m = await readManifest(p.baseDir, p.id);
     if (m?.stages.phases.status === "done") {
-      await updateStageOnDisk(baseDir, projectId, "phases", { status: "in_progress" }, nowIso());
+      await updateStageOnDisk(p.baseDir, p.id, "phases", { status: "in_progress" }, nowIso());
     }
     return saved;
   });
 
   ipcMain.handle(IPC.phasesReveal, async (_e, ref: unknown) => {
     const p = resolveRef(ref);
-    if (!p) return;
-    const dir = clipsRootFor(p);
-    await fs.mkdir(dir, { recursive: true });
-    await shell.openPath(dir);
+    if (p) await revealDir(p, clipsRootFor(p));
   });
 
   ipcMain.handle(IPC.segListFrames, async (_e, ref: unknown) => {
@@ -603,77 +610,33 @@ function registerIpc(): void {
     return p ? loadSegmentationSnapshot(p.baseDir, p.id) : null;
   });
 
-  ipcMain.handle(IPC.segSave, async (_e, ref: unknown, snapshot: unknown) => {
-    const p = await editable(ref);
-    if (!p) return null;
-    const { baseDir, id: projectId } = p;
-    try {
-      const { frameCount, maskCount } = await saveSegmentationSnapshot(baseDir, projectId, snapshot);
-      return await updateStageOnDisk(
-        baseDir,
-        projectId,
-        "segmentation",
-        { status: "done", counts: { frames: frameCount, masks: maskCount } },
-        nowIso(),
-      );
-    } catch (err) {
-      const e = err instanceof Error ? err : new Error(String(err));
-      await crashLogger.record(
-        { source: "segmentation", message: e.message, detail: e.stack, projectId, stage: "segmentation" },
-        nowIso(),
-      );
-      return updateStageOnDisk(baseDir, projectId, "segmentation", { status: "error", error: e.message }, nowIso());
-    }
-  });
+  handleWrite(IPC.segSave, null, (_e, p, snapshot) =>
+    runStage(p, "segmentation", async () => {
+      const { frameCount, maskCount } = await saveSegmentationSnapshot(p.baseDir, p.id, snapshot);
+      return { status: "done", counts: { frames: frameCount, masks: maskCount } };
+    }),
+  );
 
-  ipcMain.handle(IPC.exportRun, async (event, ref: unknown) => {
-    const p = await editable(ref);
-    if (!p) return null;
-    const { baseDir, id: projectId } = p;
-    const send = (p: ExportProgress) => event.sender.send(IPC.exportProgress, p);
-    try {
-      await updateStageOnDisk(baseDir, projectId, "export", { status: "in_progress" }, nowIso());
-      const result = await runExport(baseDir, projectId, send, exportRootFor(p));
-      return await updateStageOnDisk(
-        baseDir,
-        projectId,
-        "export",
-        { status: "done", counts: { frames: result.frameCount, labelMaps: result.labelMapCount } },
-        nowIso(),
-      );
-    } catch (err) {
-      const e = err instanceof Error ? err : new Error(String(err));
-      await crashLogger.record(
-        { source: "export", message: e.message, detail: e.stack, projectId, stage: "export" },
-        nowIso(),
-      );
-      return updateStageOnDisk(baseDir, projectId, "export", { status: "error", error: e.message }, nowIso());
-    }
-  });
+  handleWrite(IPC.exportRun, null, (event, p) =>
+    runStage(
+      p,
+      "export",
+      async () => {
+        const result = await runExport(p.baseDir, p.id, (pr: ExportProgress) => event.sender.send(IPC.exportProgress, pr), exportRootFor(p));
+        return { status: "done", counts: { frames: result.frameCount, labelMaps: result.labelMapCount } };
+      },
+      true,
+    ),
+  );
 
   ipcMain.handle(IPC.exportReveal, async (_e, ref: unknown) => {
     const p = resolveRef(ref);
-    if (!p) return;
-    const dir = exportRootFor(p);
-    await fs.mkdir(dir, { recursive: true });
-    await shell.openPath(dir);
+    if (p) await revealDir(p, exportRootFor(p));
   });
 
-  ipcMain.handle(IPC.framesRemove, async (_e, ref: unknown, frameIds: unknown): Promise<string[]> => {
-    const p = await editable(ref);
-    if (!p || !Array.isArray(frameIds)) return [];
-    const names = frameIds.filter((f): f is string => typeof f === "string");
-    return removeFrames(p.baseDir, p.id, names);
-  });
-
-  ipcMain.handle(IPC.updateCheck, (): Promise<UpdateStatus> => checkForUpdates(app.isPackaged));
-
-  ipcMain.handle(IPC.crashList, () => crashLogger.list());
-  ipcMain.handle(IPC.crashRead, (_e, file: unknown) =>
-    typeof file === "string" ? crashLogger.read(file) : null,
-  );
-  ipcMain.handle(IPC.crashOpenFolder, () => {
-    void shell.openPath(crashLogger.directory);
+  handleWrite(IPC.framesRemove, [] as string[], async (_e, p, frameIds) => {
+    if (!Array.isArray(frameIds)) return [];
+    return removeFrames(p.baseDir, p.id, frameIds.filter((f): f is string => typeof f === "string"));
   });
 }
 
@@ -744,75 +707,10 @@ app.whenReady().then(async () => {
   settings = await loadSettings(settingsPath());
   await checkNas();
 
-  // Serve project frames over endoseg-frame://frame/<projectId>/<source>/<file>.
-  protocol.handle("endoseg-frame", async (req) => {
-    try {
-      const u = new URL(req.url);
-      const parts = u.pathname.split("/").filter(Boolean).map((p) => decodeURIComponent(p));
-      const [ref, source, filename] = parts;
-      const p = resolveRef(ref);
-      const abs = p ? resolveFramePath(p.baseDir, p.id, source, filename) : null;
-      if (!abs) {
-        console.warn(`[seg] frame 404 (bad path) ${req.url}`);
-        return new Response("not found", { status: 404 });
-      }
-      const data = await fs.readFile(abs);
-      frameServeCount += 1;
-      if (frameServeCount <= 3 || frameServeCount % 25 === 0) {
-        console.log(`[seg] frame served #${frameServeCount} ${filename} (${data.length} bytes)`);
-      }
-      return new Response(new Uint8Array(data), {
-        headers: { "Content-Type": "image/png", "Access-Control-Allow-Origin": "*" },
-      });
-    } catch (err) {
-      console.error(`[seg] frame error ${req.url}:`, err instanceof Error ? err.message : err);
-      return new Response("error", { status: 500 });
-    }
-  });
-
-  // Stream the intake video over endoseg-video://video/<projectId>. Byte ranges
-  // are honoured so the <video> element can seek without reading the whole file.
-  protocol.handle("endoseg-video", async (req) => {
-    try {
-      const p = resolveRef(decodeURIComponent(new URL(req.url).pathname.split("/").filter(Boolean)[0] ?? ""));
-      const intake = p ? await readIntakeRecord(p.baseDir, p.id) : null;
-      const rel = intake?.playbackFile;
-      if (!p || !rel || rel.includes("..")) return new Response("not found", { status: 404 });
-      const abs = path.join(projectDir(p.baseDir, p.id), "00_intake", rel);
-      const size = (await fs.stat(abs)).size;
-      const ext = path.extname(abs).toLowerCase();
-      const type = ext === ".webm" ? "video/webm" : ext === ".mov" ? "video/quicktime" : "video/mp4";
-      const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.get("range") ?? "");
-      let start = 0;
-      let end = size - 1;
-      if (m) {
-        if (m[1]) {
-          start = Number(m[1]);
-          if (m[2]) end = Math.min(Number(m[2]), size - 1);
-        } else if (m[2]) {
-          start = Math.max(0, size - Number(m[2])); // suffix range: last N bytes
-        }
-        if (start > end || start >= size) {
-          return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
-        }
-      }
-      const body = Readable.toWeb(createReadStream(abs, { start, end })) as ReadableStream;
-      return new Response(body, {
-        status: m ? 206 : 200,
-        headers: {
-          "Content-Type": type,
-          "Content-Length": String(end - start + 1),
-          "Accept-Ranges": "bytes",
-          ...(m ? { "Content-Range": `bytes ${start}-${end}/${size}` } : {}),
-        },
-      });
-    } catch (err) {
-      console.error(`[phases] video error ${req.url}:`, err instanceof Error ? err.message : err);
-      return new Response("error", { status: 500 });
-    }
-  });
-
-  registerIpc();
+  handleSchemes(resolveRef);
+  registerAppIpc();
+  registerCaseIpc();
+  registerStageIpc();
   setupUpdater((s) => mainWindow?.webContents.send(IPC.updateStatus, s));
   createWindow();
 
@@ -825,11 +723,13 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// Release the open-case lock on the way out (a crash just lets it go stale).
+// Release the open-case locks on the way out (a crash just lets them go stale).
 let releasedOnQuit = false;
 app.on("before-quit", (e) => {
-  if (releasedOnQuit || !held) return;
+  if (releasedOnQuit) return;
   e.preventDefault();
   releasedOnQuit = true;
-  void closeHeld().finally(() => app.quit());
+  // Don't let a hung network drive stop EndoSeg from closing: the lock just goes stale.
+  const timeout = new Promise((r) => setTimeout(r, 5000));
+  void Promise.race([session.releaseAll(), timeout]).finally(() => app.quit());
 });

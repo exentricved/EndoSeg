@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type CropRect, formatTimecode, normalizeCrop } from "../core/phases.js";
 import type { PhasesState } from "../shared/ipc.js";
+import { errorText } from "./ui.js";
 
 // Pick the part of the picture to keep (drop black borders, on-screen text,
 // the fluoroscopy half of a split screen...). Non-destructive: the rectangle
@@ -13,6 +14,7 @@ export function CropView({ projectId, onDone }: { projectId: string; onDone: () 
   const [duration, setDuration] = useState(0);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
@@ -69,9 +71,12 @@ export function CropView({ projectId, onDone }: { projectId: string; onDone: () 
 
   const save = useCallback(async (value: CropRect | null) => {
     setSaving(true);
+    setError(null);
     try {
       await window.endoseg.saveCrop(projectId, value);
       onDone();
+    } catch (err) {
+      setError(`Crop not saved: ${errorText(err)}`);
     } finally {
       setSaving(false);
     }
@@ -87,6 +92,7 @@ export function CropView({ projectId, onDone }: { projectId: string; onDone: () 
         <button className="secondary" onClick={onDone} disabled={saving}>← Back to project</button>
         <strong>Crop</strong>
         <span className="muted" style={{ fontSize: 12 }}>{state.caseName ?? projectId}</span>
+        {error && <span className="warn" role="alert">⚠ {error}</span>}
         <span className="spacer" />
         <span className="muted" style={{ fontSize: 12 }}>
           {crop ? `Keeping ${crop.w}×${crop.h} at (${crop.x}, ${crop.y})` : "Whole picture"} of {state.width}×{state.height}

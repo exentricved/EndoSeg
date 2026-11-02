@@ -22,8 +22,8 @@ import {
   frameTimeKey,
   parsePhaseLabels,
   numberSpans,
-  caseNameFromSource,
   phaseFolderName,
+  caseNameFromSource,
   phaseClipName,
   phaseFrameName,
   buildClipArgs,
@@ -166,7 +166,8 @@ export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<Phase
 
   const dir = projectDir(opts.baseDir, opts.projectId);
   const source = path.join(dir, "00_intake", "source", intake.sourceFile);
-  const caseName = caseNameFromSource(intake.sourcePath);
+  // Clips and frames are named after the case (its folder name), the same everywhere.
+  const caseName = opts.projectId;
   const numbered = numberSpans(labels.spans);
   const crop = await loadCrop(opts.baseDir, opts.projectId, intake);
   const fail = (what: string, res: { code: number; stderr: string }) =>
@@ -177,14 +178,18 @@ export async function runPhaseExport(opts: RunPhaseExportOptions): Promise<Phase
   const round = (sec: number) => Math.round(sec * 1000) / 1000;
 
   // 1. Clips. Clear previous clips first so a deleted span doesn't leave its clip behind.
-  for (const id of CLIP_FOLDER_IDS) {
-    const folder = phaseFolderName(caseName, id);
-    const folderPath = path.join(opts.exportRoot, folder);
-    let names: string[] = [];
-    try { names = await fs.readdir(folderPath); } catch { /* not created yet */ }
-    for (const n of names) if (isOwnClip(n, folder)) await fs.rm(path.join(folderPath, n), { force: true });
-    // Older versions' cannulation-success folder: drop it once it's empty.
-    if (id === "cannulation-success") await fs.rmdir(folderPath).catch(() => { /* absent or has other files */ });
+  // Earlier versions named clips after the video's folder; clear those too.
+  const legacyName = caseNameFromSource(intake.sourcePath);
+  for (const name of new Set([caseName, legacyName])) {
+    for (const id of CLIP_FOLDER_IDS) {
+      const folder = phaseFolderName(name, id);
+      const folderPath = path.join(opts.exportRoot, folder);
+      let names: string[] = [];
+      try { names = await fs.readdir(folderPath); } catch { /* not created yet */ }
+      for (const n of names) if (isOwnClip(n, folder)) await fs.rm(path.join(folderPath, n), { force: true });
+      // Old-named folders and older versions' cannulation-success folder: drop them once empty.
+      if (name !== caseName || id === "cannulation-success") await fs.rmdir(folderPath).catch(() => { /* absent or has other files */ });
+    }
   }
   const clipIndex: ClipIndexEntry[] = [];
   for (const { span, index } of numbered) {

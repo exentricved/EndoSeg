@@ -8,6 +8,7 @@ import {
   parseRef,
   rawRowStatus,
   formatBytes,
+  intakeStatusOf,
   type RawRow,
   type WorkspaceId,
 } from "../core/workspaces.js";
@@ -15,7 +16,7 @@ import { StageBar } from "./StageBar.js";
 import { CrashLogView } from "./CrashLogView.js";
 import { SettingsView } from "./SettingsView.js";
 import { ProjectDetail } from "./ProjectDetail.js";
-import { StageBadge, formatTime } from "./ui.js";
+import { StageBadge, formatTime, errorText } from "./ui.js";
 import { SegmentationView } from "./SegmentationView.js";
 import { PhasesView } from "./PhasesView.js";
 import { CropView } from "./CropView.js";
@@ -46,8 +47,8 @@ export function App() {
   const [tab, setTab] = useState<Tab>("raw");
   const [notice, setNotice] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  // Set when another computer took over the case open here.
-  const [lockLost, setLockLost] = useState<string | null>(null);
+  // Set when another computer took over the case open here: { ref, message }.
+  const [lockLost, setLockLost] = useState<{ ref: string; text: string } | null>(null);
 
   // A case's lock is held while any of its views is showing; release it on the
   // way back to the Cases, Settings or Troubleshooting screens.
@@ -61,13 +62,19 @@ export function App() {
   useEffect(
     () =>
       window.endoseg.onCaseAccessChanged((c) =>
-        setLockLost(`${c.access.lockedBy ?? "Someone else"} took over ${refLabel(c.ref)}. Changes you make now won't be saved; go back to the case page.`),
+        setLockLost((cur) =>
+          c.access.readOnly
+            ? { ref: c.ref, text: `${c.access.lockedBy ?? "Someone else"} took over ${refLabel(c.ref)}. Changes you make now won't be saved; go back to the case page.` }
+            : cur?.ref === c.ref
+            ? null // the case is ours again
+            : cur,
+        ),
       ),
     [],
   );
-  const lostToast = lockLost && openRef ? (
+  const lostToast = lockLost && lockLost.ref === openRef ? (
     <div className="lock-lost" role="alert">
-      🔒 {lockLost}
+      🔒 {lockLost.text}
     </div>
   ) : null;
 
@@ -467,7 +474,7 @@ function ProjectTable(props: {
       setCopying({ id, line: `${p.phase === "copy" ? "Copying" : "Checking copy"} ${p.percent}%…` }),
     );
     try {
-      const r = await window.endoseg.startSecondReview(makeRef("a1", id));
+      const r = await window.endoseg.startSecondReview(makeRef("a1", id)).catch((err: unknown) => ({ ok: false, error: errorText(err), ref: undefined }));
       if (r.ok && r.ref) props.onOpen(r.ref);
       else {
         props.onNotice(r.error ?? "Could not start the second review.");
@@ -485,9 +492,11 @@ function ProjectTable(props: {
     setDeleting(true);
     try {
       await window.endoseg.deleteProject(makeRef(props.ws, id));
+    } catch (err) {
+      props.onNotice(`Not deleted: ${errorText(err)}`);
+    } finally {
       setConfirming(null);
       props.onChanged();
-    } finally {
       setDeleting(false);
     }
   };
@@ -572,11 +581,11 @@ function ProjectTable(props: {
                   {props.ws === "a1" && (
                     <button
                       onClick={() => setReviewArmed(p.id)}
-                      disabled={props.disabled || !!copying || p.stageStatuses[0]?.status !== "done" || !!props.openBy[makeRef("a1", p.id)]}
+                      disabled={props.disabled || !!copying || intakeStatusOf(p) !== "done" || !!props.openBy[makeRef("a1", p.id)]}
                       title={
                         props.openBy[makeRef("a1", p.id)]
                           ? "Someone has this case open; it can be sent to review once they close it"
-                          : p.stageStatuses[0]?.status === "done"
+                          : intakeStatusOf(p) === "done"
                           ? "Copy the whole case to Annotated 2 for the second reader; this copy becomes read-only"
                           : "Finish intake first"
                       }

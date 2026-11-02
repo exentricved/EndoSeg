@@ -6,7 +6,7 @@ import {
   type StageId,
 } from "../core/stages.js";
 import type { IntakeProgress, ExportProgress, CaseAccess } from "../shared/ipc.js";
-import { StageBadge, formatTime } from "./ui.js";
+import { StageBadge, formatTime, errorText } from "./ui.js";
 import { WORKSPACE_LABELS, parseRef } from "../core/workspaces.js";
 
 const STAGE_HINT: Record<StageId, string> = {
@@ -50,12 +50,14 @@ export function ProjectDetail({
   const [missing, setMissing] = useState(false);
   const [running, setRunning] = useState<StageId | null>(null);
   const [statusLine, setStatusLine] = useState<string | null>(null);
-  const [access, setAccess] = useState<CaseAccess>({ readOnly: false });
+  // null until the case has been opened (its lock taken, or found read-only).
+  const [access, setAccess] = useState<CaseAccess | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const unsub = useRef<(() => void) | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (takeOver = false) => {
     // Opening the case takes its lock (read-only if someone else has it open).
-    const [m, a] = await Promise.all([window.endoseg.getProject(id), window.endoseg.openCase(id)]);
+    const [m, a] = await Promise.all([window.endoseg.getProject(id), window.endoseg.openCase(id, takeOver)]);
     setAccess(a);
     if (!m) setMissing(true);
     else setManifest(m);
@@ -73,17 +75,26 @@ export function ProjectDetail({
     [id],
   );
 
+  // While someone else has the case open, look again every 30 s: it becomes
+  // editable here on its own once they close it.
+  const lockedBy = access?.lockedBy;
+  useEffect(() => {
+    if (!lockedBy) return;
+    const t = setInterval(() => void load(), 30_000);
+    return () => clearInterval(t);
+  }, [lockedBy, load]);
+
   const [takeOverArmed, setTakeOverArmed] = useState(false);
   const takeOver = useCallback(async () => {
     setTakeOverArmed(false);
-    setAccess(await window.endoseg.openCase(id, true));
-    await load();
-  }, [id, load]);
+    await load(true);
+  }, [load]);
 
   const runIntake = useCallback(async (picked?: string) => {
     const sourcePath = picked ?? (await window.endoseg.pickVideo());
     if (!sourcePath) return;
     setRunning("intake");
+    setActionError(null);
     setStatusLine(INTAKE_LABEL.copy);
     unsub.current = window.endoseg.onIntakeProgress((p) =>
       setStatusLine(INTAKE_LABEL[p.phase] + (p.percent != null ? ` ${p.percent}%` : "")),
@@ -93,6 +104,8 @@ export function ProjectDetail({
       const updated = await window.endoseg.runIntake(id, sourcePath);
       if (updated) setManifest(updated);
       ok = updated?.stages.intake.status === "done";
+    } catch (err) {
+      setActionError(`Intake not started: ${errorText(err)}`);
     } finally {
       unsub.current?.();
       unsub.current = null;
@@ -103,16 +116,19 @@ export function ProjectDetail({
     if (ok) onOpenCrop(id);
   }, [id, onOpenCrop]);
 
-  // Run once per picked video (StrictMode re-runs effects; the ref keeps it single).
+  // Run once per picked video (StrictMode re-runs effects; the ref keeps it
+  // single), and only if the case opened editable the first time: a case that
+  // was busy elsewhere never starts intake later on its own.
   const autoStarted = useRef(false);
   useEffect(() => {
-    if (!intakePath || autoStarted.current) return;
+    if (!intakePath || autoStarted.current || access === null) return;
     autoStarted.current = true;
-    void runIntake(intakePath);
-  }, [intakePath, runIntake]);
+    if (!access.readOnly) void runIntake(intakePath);
+  }, [intakePath, runIntake, access]);
 
   const runExportStage = useCallback(async () => {
     setRunning("export");
+    setActionError(null);
     setStatusLine(EXPORT_LABEL.frames);
     unsub.current = window.endoseg.onExportProgress((p) =>
       setStatusLine(EXPORT_LABEL[p.phase] + (p.total > 0 ? ` (${p.done}/${p.total})` : "")),
@@ -120,6 +136,8 @@ export function ProjectDetail({
     try {
       const updated = await window.endoseg.runExport(id);
       if (updated) setManifest(updated);
+    } catch (err) {
+      setActionError(`Export not started: ${errorText(err)}`);
     } finally {
       unsub.current?.();
       unsub.current = null;
@@ -136,7 +154,7 @@ export function ProjectDetail({
       </main>
     );
   }
-  if (!manifest) return <main className="detail"><p className="muted">Loading…</p></main>;
+  if (!manifest || !access) return <main className="detail"><p className="muted">Loading…</p></main>;
 
   // Read-only cases (Annotated 1 once in second review) only offer Open folder.
   const busy = running !== null || access.readOnly;
@@ -155,6 +173,15 @@ export function ProjectDetail({
           Open folder
         </button>
       </div>
+
+      {actionError && (
+        <div className="library-error" role="alert">
+          ⚠ {actionError}{" "}
+          <button className="link" onClick={() => setActionError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {access.readOnly && (
         <div className="readonly-banner" role="status">

@@ -5,6 +5,7 @@
 - **Raw** lists every case folder with its video, size and where the case is: *Not started*, *In Annotated 1*, *Annotated 1 · intake not finished* or *In Annotated 2*. Filter by name, or show only cases not started. Nothing is ever written to the Raw folder.
 - **Start intake** (click, then confirm **Copy … to Annotated 1**) creates `Annotated 1\<case>\` under the case's own folder name, copies and hashes the video in one pass (with a percentage), and opens Crop. If two people start the same case at once, only one wins; the other gets "already started". A copy that stops partway leaves no half-finished video behind, and **Retry intake** appears on the Raw row.
 - A folder holding more than one video gets a picker on its Raw row.
+- Clips and frames are named after the case folder (a video at the root of Raw ERCP Videos is no longer named "Raw ERCP Videos").
 - Each case folder now holds everything: the video, phases, frames, masks and the clips (`<case>\clips\<case>_<label>\`). The separate *Annotated Videos* folder is no longer used.
 - **Delete…** in Annotated 1/2 moves the case to that folder's `_deleted\` (recoverable); the case shows as *Not started* in Raw again.
 - If the NAS can't be reached, a banner says so and nothing is written anywhere else.
@@ -18,12 +19,17 @@
 - If two people start the same review at once, only one wins; the other gets "already in Annotated 2".
 - Deleting the Annotated 2 copy (moved to `Annotated 2\_deleted\`) makes the Annotated 1 case editable again.
 - Per-machine scratch (`autosave`, `logs`) and half-written temp files are not copied.
+- The Annotated 1 case is kept open (locked) by whoever runs the copy, so nobody can change it partway through. `project.json` is copied last, after every other file is checked, so the case only appears in Annotated 2 once the copy is verified.
+- If EndoSeg crashes mid-copy, the half-made Annotated 2 folder stops counting after 10 minutes: the Annotated 1 case is editable again and **Second review** can be re-run (it clears the old partial copy). A folder in Annotated 2 that EndoSeg didn't make is never removed.
 
 ## One editor per case: open-case lock
 - Opening a case writes `<case>\.open.lock` with the computer name and Windows user, refreshed every 30 s, and deletes it when you go back to Cases or quit EndoSeg. Nothing is kept after the case is closed.
 - While someone has a case open, others see **🔒 Open on PC (user)** on its row, and opening it is read-only, with a banner saying who has it and since when. **Check again** re-tries; **Take over…** (confirm) takes the case, and their unsaved changes are lost.
 - Whoever lost the case sees a red warning within 30 s, in any view (annotator, phases, crop), and their saves are refused from then on.
-- If EndoSeg crashes or the PC sleeps, its lock goes stale after 2 minutes and the next person to open the case gets it automatically.
+- If EndoSeg crashes or the PC sleeps, its lock stops counting once it hasn't been refreshed for 2 minutes. A case page showing *Open on…* checks again every 30 s and becomes editable by itself when the case is free. Staleness is judged by your own computer's clock, so PCs whose clocks disagree can't take each other's cases by mistake.
+- Saves that are still running (intake, export) keep the case locked until they finish, even if you go back to Cases.
+- A short NAS drop doesn't lose your lock, and a lock that can't be read is treated as held, never as free.
+- A save or export that is refused now says why, instead of doing nothing.
 - Second review and Delete wait until nobody has the case open.
 
 ## Fluoroscopic PD maneuvers

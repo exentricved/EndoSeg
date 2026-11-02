@@ -3,6 +3,7 @@
 
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { SegFrame } from "../shared/ipc.js";
+import { errorText } from "./ui.js";
 import { PHASES, MANEUVERS, labelById, maneuverById, formatTimecode, SUCCESS_COLOR } from "../core/phases.js";
 import {
   type Gray,
@@ -658,11 +659,16 @@ export function SegmentationView({ projectId }: { projectId: string }) {
       const splitScreen = [...splitRef.current].filter((id) => live.has(id));
       const completed = [...completedRef.current].filter((id) => live.has(id));
       const snapshot: NativeSnapshot = { version: 1, frames: frameItems, splitScreen, completed };
-      await window.endoseg.saveSegmentation(projectId, snapshot);
+      const m = await window.endoseg.saveSegmentation(projectId, snapshot);
+      const st = m?.stages.segmentation;
+      if (!m || st?.status === "error") {
+        setSaveMsg(`Not saved: ${st?.error ?? "the case could not be updated"}`);
+        return;
+      }
       setSaveMsg("Saved");
       setTimeout(() => setSaveMsg(null), 2500);
     } catch (e) {
-      setSaveMsg(`Error: ${String(e)}`);
+      setSaveMsg(`Not saved: ${errorText(e)}`);
     } finally {
       setSaving(false);
     }

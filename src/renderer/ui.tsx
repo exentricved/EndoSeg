@@ -11,3 +11,9 @@ export function formatTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
+
+/** The message of an error from the main process, without Electron's "Error invoking remote method …" wrapper. */
+export function errorText(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, "");
+}
