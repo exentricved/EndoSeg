@@ -1,3 +1,12 @@
+# EndoSeg — v0.3.1 (2026-11-13)
+
+## Export: one mask per class
+- Each export now has `masks/<CLASS_NAME>/<frame>.png`: one black/white mask per class (255 = class), written for all 10 classes on every exported frame (all black when the class is absent). Classes keep their own masks, so overlaps are preserved: a papilla under the sphincterotome, glare or fluid is no longer cut away.
+- `previews/<frame>.png` shows each label map in the class colours, for checking by eye.
+- `label_maps/<frame>.png` is unchanged (pixel value = class ID, the higher ID wins on overlap). Note that it looks almost black in an image viewer because the values are only 0–10.
+- `metadata.json` (now version 2): `classIds` includes brush-painted classes (it used to list only polygon classes); new per-frame `masks`, `preview` and `classPixels` fields; a `layout` block describes the folders.
+- Brush-mask edges no longer grow the region by a partly covered pixel.
+
 # EndoSeg — v0.3.0 (2026-11-02)
 
 ## Everything on the NAS: Raw → Annotated 1 → Annotated 2

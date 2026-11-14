@@ -1,8 +1,17 @@
-// Export stage: packages annotated frames + multi-class label maps + metadata.json
-// into 03_export/<export-id>/ for ML training use.
+// Export stage: packages annotated frames + masks + metadata.json into
+// 03_export/<export-id>/ for ML training use:
 //
-// Label maps are 8-bit grayscale PNGs where each pixel value is the class ID
-// (0 = background, 1-10 = annotated classes). Class IDs mirror SegmentationView.tsx.
+//   images/<frame>.png              the source frame
+//   masks/<CLASS_NAME>/<frame>.png  one binary mask per class (0 / 255), written for
+//                                   every class on every exported frame (all-black when
+//                                   absent). Classes may overlap — nothing is lost.
+//   label_maps/<frame>.png          8-bit single-channel map, pixel = class ID
+//                                   (0 = background, 1-10). One class per pixel, so on
+//                                   overlap the higher class ID wins.
+//   previews/<frame>.png            label map in class colours, for checking by eye.
+//   metadata.json                   classes, per-frame info and file paths.
+//
+// Class IDs mirror SegmentationView.tsx.
 
 import { deflateSync, inflateSync } from "node:zlib";
 import { promises as fs } from "node:fs";
@@ -80,24 +89,26 @@ function pngChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([len, t, data, crc]);
 }
 
-/** Encode a Uint8Array of grayscale pixel values as an 8-bit PNG. */
-function writePng(pixels: Uint8Array, width: number, height: number): Buffer {
+/**
+ * Encode 8-bit pixels as a PNG: 1 channel = grayscale, 3 channels = RGB
+ * (interleaved, row-major).
+ */
+export function writePng(pixels: Uint8Array, width: number, height: number, channels: 1 | 3 = 1): Buffer {
   const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
   const ihdr = Buffer.allocUnsafe(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 0; // grayscale
+  ihdr[9] = channels === 3 ? 2 : 0; // RGB : grayscale
   ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
 
   // Each row is prefixed with filter byte 0 (None).
-  const raw = Buffer.allocUnsafe(height * (width + 1));
+  const rowLen = width * channels;
+  const raw = Buffer.allocUnsafe(height * (rowLen + 1));
   for (let y = 0; y < height; y++) {
-    raw[y * (width + 1)] = 0;
-    for (let x = 0; x < width; x++) {
-      raw[y * (width + 1) + 1 + x] = pixels[y * width + x]!;
-    }
+    raw[y * (rowLen + 1)] = 0;
+    raw.set(pixels.subarray(y * rowLen, (y + 1) * rowLen), y * (rowLen + 1) + 1);
   }
 
   return Buffer.concat([
@@ -132,18 +143,6 @@ function fillPoly(pts: Pt[], value: number, px: Uint8Array, w: number, h: number
   }
 }
 
-/**
- * Rasterize a frame's polygons into an 8-bit label map (pixel = class ID, 0 = background).
- * Polygons are drawn in class-ID order so higher IDs (instruments) overwrite lower ones (anatomy).
- */
-function rasterizeLabelMap(polygons: Polygon[], w: number, h: number): Uint8Array {
-  const px = new Uint8Array(w * h);
-  const sorted = [...polygons].sort((a, b) => a.classId - b.classId);
-  for (const p of sorted) {
-    if (p.classId >= 1 && p.classId <= 255) fillPoly(p.points, p.classId, px, w, h);
-  }
-  return px;
-}
 
 // ---- PNG decoder (for reading canvas-produced mask PNGs) ----
 
@@ -211,7 +210,8 @@ function decodeMaskPng(data: Buffer): { mask: Uint8Array; width: number; height:
       for (let x = 0; x < width; x++) {
         const base = 1 + x * bpp;
         const check = alphaOff >= 0 ? base + alphaOff : base;
-        if (row[check]! > 0) mask[y * width + x] = 1;
+        // Half-coverage threshold: anti-aliased fringe pixels don't grow the mask.
+        if (row[check]! >= 128) mask[y * width + x] = 1;
       }
     }
     return { mask, width, height };
@@ -219,40 +219,76 @@ function decodeMaskPng(data: Buffer): { mask: Uint8Array; width: number; height:
 }
 
 /**
- * Build an 8-bit label map (pixel = class ID, 0 = background) by combining
- * polygon rasterization with any saved per-class binary mask PNGs.
- * Higher class IDs overwrite lower ones on overlap (same as polygon rasterizer).
+ * Build one binary mask (0/1) per class by combining polygon rasterization with
+ * any saved brush-painted mask PNGs. Classes are kept separate, so overlapping
+ * regions survive. Only classes with at least one pixel are returned.
  */
-async function buildLabelMap(
+async function buildClassMasks(
   polys: Polygon[],
   masksDir: string,
   frameName: string,
   w: number,
   h: number,
-): Promise<Uint8Array> {
-  const pixels = rasterizeLabelMap(polys, w, h);
+): Promise<Map<number, Uint8Array>> {
+  const masks = new Map<number, Uint8Array>();
+  const get = (id: number) => {
+    let m = masks.get(id);
+    if (!m) { m = new Uint8Array(w * h); masks.set(id, m); }
+    return m;
+  };
+  for (const p of polys) {
+    if (p.classId >= 1 && p.classId <= 255) fillPoly(p.points, 1, get(p.classId), w, h);
+  }
   try {
     const files = await fs.readdir(masksDir);
     const prefix = `${frameName}__class`;
-    const maskFiles = files
-      .filter((f) => f.startsWith(prefix) && f.endsWith(".png"))
-      .sort((a, b) => {
-        const aId = parseInt(a.slice(prefix.length, -4)) || 0;
-        const bId = parseInt(b.slice(prefix.length, -4)) || 0;
-        return aId - bId; // ascending so higher IDs overwrite lower on overlap
-      });
-    for (const mf of maskFiles) {
-      const classId = parseInt(mf.slice(prefix.length, -4)) || 0;
+    for (const mf of files) {
+      if (!mf.startsWith(prefix) || !mf.endsWith(".png")) continue;
+      const idStr = mf.slice(prefix.length, -4);
+      if (!/^\d+$/.test(idStr)) continue;
+      const classId = Number(idStr);
       if (classId < 1 || classId > 255) continue;
-      const data = await fs.readFile(path.join(masksDir, mf));
-      const decoded = decodeMaskPng(data);
+      const decoded = decodeMaskPng(await fs.readFile(path.join(masksDir, mf)));
       if (!decoded || decoded.width !== w || decoded.height !== h) continue;
-      for (let i = 0; i < decoded.mask.length; i++) {
-        if (decoded.mask[i]) pixels[i] = classId;
-      }
+      const m = get(classId);
+      for (let i = 0; i < decoded.mask.length; i++) if (decoded.mask[i]) m[i] = 1;
     }
   } catch { /* masks dir may not exist */ }
-  return pixels;
+  for (const [id, m] of masks) if (!m.some((v) => v > 0)) masks.delete(id);
+  return masks;
+}
+
+/**
+ * Flatten per-class masks into an 8-bit label map (pixel = class ID, 0 = background).
+ * Classes are laid down in ascending ID order, so higher IDs (instruments) win on overlap.
+ */
+function composeLabelMap(masks: Map<number, Uint8Array>, w: number, h: number): Uint8Array {
+  const px = new Uint8Array(w * h);
+  for (const id of [...masks.keys()].sort((a, b) => a - b)) {
+    const m = masks.get(id)!;
+    for (let i = 0; i < m.length; i++) if (m[i]) px[i] = id;
+  }
+  return px;
+}
+
+/** Render a label map in the class colours (RGB, background black). */
+function colorizeLabelMap(labels: Uint8Array): Uint8Array {
+  const lut = new Uint8Array(256 * 3);
+  for (const c of EXPORT_CLASSES) {
+    const n = parseInt(c.color.slice(1), 16);
+    lut[c.id * 3] = (n >> 16) & 0xff; lut[c.id * 3 + 1] = (n >> 8) & 0xff; lut[c.id * 3 + 2] = n & 0xff;
+  }
+  const rgb = new Uint8Array(labels.length * 3);
+  for (let i = 0; i < labels.length; i++) {
+    const o = labels[i]! * 3;
+    rgb[i * 3] = lut[o]!; rgb[i * 3 + 1] = lut[o + 1]!; rgb[i * 3 + 2] = lut[o + 2]!;
+  }
+  return rgb;
+}
+
+/** Folder name for a class's binary masks (catalog name, or class<ID> if unknown). */
+function classFolder(id: number): string {
+  return EXPORT_CLASSES.find((c) => c.id === id)?.name ?? `class${id}`;
 }
 
 // ---- Helpers ----
@@ -327,8 +363,14 @@ export async function runExport(
   const exportDir = path.join(exportRoot ?? path.join(projDir, "03_export"), exportId);
   const imagesDir = path.join(exportDir, "images");
   const labelsDir = path.join(exportDir, "label_maps");
+  const classMasksDir = path.join(exportDir, "masks");
+  const previewsDir = path.join(exportDir, "previews");
   await fs.mkdir(imagesDir, { recursive: true });
   await fs.mkdir(labelsDir, { recursive: true });
+  await fs.mkdir(previewsDir, { recursive: true });
+  for (const c of EXPORT_CLASSES) {
+    if (c.id > 0) await fs.mkdir(path.join(classMasksDir, c.name), { recursive: true });
+  }
 
   const total = annotatedFrames.length;
   let labelMapCount = 0;
@@ -337,6 +379,10 @@ export async function runExport(
     name: string;
     image: string | null;
     labelMap: string | null;
+    /** Colour preview of the label map. */
+    preview: string | null;
+    /** Binary mask per class name (0 / 255); every catalog class is present. */
+    masks: Record<string, string>;
     phase: string | null;
     /** Seconds from the start of the source video; null for legacy every-Nth frames. */
     timeSec: number | null;
@@ -348,7 +394,10 @@ export async function runExport(
     cannulationSuccess: boolean;
     completed: boolean;
     polygonCount: number;
+    /** Classes with at least one pixel on this frame (polygons and brush). */
     classIds: number[];
+    /** Pixel count per class ID in its own binary mask (before any overlap). */
+    classPixels: Record<string, number>;
   };
   const metaFrames: MetaFrame[] = [];
 
@@ -359,6 +408,8 @@ export async function runExport(
     const pngName = `${f.name}.png`;
     let imageCopied = false;
     let labelMapWritten = false;
+    let classMasks = new Map<number, Uint8Array>();
+    const maskPaths: Record<string, string> = {};
     const polys = f.polygons ?? [];
 
     // Build label map from polygon annotations + any brush-painted pixel masks.
@@ -372,9 +423,29 @@ export async function runExport(
       } catch { /* no masks dir */ }
     }
     if (w > 0 && h > 0) {
-      const pixels = await buildLabelMap(polys, masksDir, f.name, w, h);
-      if (pixels.some((v) => v > 0)) {
-        await fs.writeFile(path.join(labelsDir, pngName), writePng(pixels, w, h));
+      classMasks = await buildClassMasks(polys, masksDir, f.name, w, h);
+      if (classMasks.size > 0) {
+        const labels = composeLabelMap(classMasks, w, h);
+        await fs.writeFile(path.join(labelsDir, pngName), writePng(labels, w, h));
+        await fs.writeFile(path.join(previewsDir, pngName), writePng(colorizeLabelMap(labels), w, h, 3));
+        // One binary mask per class, empty ones included, so loaders never guess.
+        const ids = new Set<number>([...EXPORT_CLASSES.map((c) => c.id).filter((id) => id > 0), ...classMasks.keys()]);
+        let blank: Buffer | null = null;
+        for (const id of [...ids].sort((a, b) => a - b)) {
+          const folder = classFolder(id);
+          await fs.mkdir(path.join(classMasksDir, folder), { recursive: true });
+          const m = classMasks.get(id);
+          let png: Buffer;
+          if (m) {
+            const bin = new Uint8Array(m.length);
+            for (let k = 0; k < m.length; k++) if (m[k]) bin[k] = 255;
+            png = writePng(bin, w, h);
+          } else {
+            png = blank ??= writePng(new Uint8Array(w * h), w, h);
+          }
+          await fs.writeFile(path.join(classMasksDir, folder, pngName), png);
+          maskPaths[folder] = `masks/${folder}/${pngName}`;
+        }
         labelMapWritten = true;
         labelMapCount++;
       }
@@ -394,6 +465,8 @@ export async function runExport(
       name: f.name,
       image: imageCopied ? `images/${pngName}` : null,
       labelMap: labelMapWritten ? `label_maps/${pngName}` : null,
+      preview: labelMapWritten ? `previews/${pngName}` : null,
+      masks: maskPaths,
       phase: f.phase ?? null,
       timeSec: frameIndex[f.frameId]?.timeSec ?? null,
       span: frameIndex[f.frameId]?.span ?? null,
@@ -401,7 +474,13 @@ export async function runExport(
       cannulationSuccess: frameIndex[f.frameId]?.success === true,
       completed: completed.has(f.frameId),
       polygonCount: polys.length,
-      classIds: [...new Set(polys.map((p) => p.classId))].sort((a, b) => a - b),
+      classIds: classMasks.size > 0
+        ? [...classMasks.keys()].sort((a, b) => a - b)
+        // No frame/mask to rasterize against: fall back to what the polygons claim.
+        : [...new Set(polys.map((p) => p.classId))].sort((a, b) => a - b),
+      classPixels: Object.fromEntries(
+        [...classMasks].sort((a, b) => a[0] - b[0]).map(([id, m]) => [String(id), m.reduce((s, v) => s + v, 0)]),
+      ),
     });
   }
 
@@ -409,8 +488,14 @@ export async function runExport(
 
   // Write metadata.json.
   const metadata = {
-    version: 1,
+    version: 2,
     exportId,
+    layout: {
+      images: "images/<frame>.png",
+      masks: "masks/<CLASS_NAME>/<frame>.png — binary 0/255, one per class, overlaps preserved",
+      labelMaps: "label_maps/<frame>.png — pixel value = class id; on overlap the higher id wins",
+      previews: "previews/<frame>.png — label map in class colours, for visual QA only",
+    },
     exportedAt: new Date().toISOString(),
     project: { id: projectId },
     classes: EXPORT_CLASSES,
