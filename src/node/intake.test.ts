@@ -12,6 +12,7 @@ import {
   sha256File,
   copyAndHash,
   runIntake,
+  probeVideo,
 } from "./intake.js";
 import { run } from "./proc.js";
 
@@ -75,6 +76,20 @@ describe("buildProbeArgs", () => {
     expect(args).toContain("json");
     expect(args).toContain("-show_streams");
     expect(args[args.length - 1]).toBe("in.mp4");
+  });
+
+  it("does not silence ffprobe errors", () => {
+    expect(buildProbeArgs("in.mp4")).not.toContain("quiet");
+  });
+});
+
+describe("probeVideo on a non-video", () => {
+  it("reports ffprobe's reason instead of an empty message", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "probe-bad-"));
+    const bad = path.join(dir, "not-a-video.mp4");
+    await fs.writeFile(bad, "this is not a video");
+    await expect(probeVideo(ffprobePath, bad)).rejects.toThrow(/ffprobe failed \(\d+\) on not-a-video\.mp4: \S+/);
+    await fs.rm(dir, { recursive: true, force: true });
   });
 });
 

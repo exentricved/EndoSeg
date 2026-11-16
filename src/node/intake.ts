@@ -75,7 +75,8 @@ export function safeBasename(name: string): string {
 }
 
 export function buildProbeArgs(input: string): string[] {
-  return ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", input];
+  // "-v error" (not "quiet") so a failed probe says why on stderr; stdout stays pure JSON.
+  return ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", input];
 }
 
 // ── Filesystem + spawn orchestrators ─────────────────────────────────────────
@@ -130,7 +131,11 @@ export async function copyAndHash(
 
 export async function probeVideo(ffprobePath: string, input: string): Promise<VideoMeta> {
   const res = await run(ffprobePath, buildProbeArgs(input));
-  if (res.code !== 0) throw new Error(`ffprobe failed (${res.code}): ${res.stderr.slice(-400)}`);
+  if (res.code !== 0) {
+    const why = res.stderr.trim().slice(-400) ||
+      "no details from ffprobe — the file may be incomplete, corrupt, or not a video";
+    throw new Error(`ffprobe failed (${res.code}) on ${path.basename(input)}: ${why}`);
+  }
   let json: unknown;
   try {
     json = JSON.parse(res.stdout);
