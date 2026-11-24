@@ -7,6 +7,9 @@
 - `metadata.json` (now version 2): `classIds` includes brush-painted classes (it used to list only polygon classes); new per-frame `masks`, `preview` and `classPixels` fields; a `layout` block describes the folders.
 - Brush-mask edges no longer grow the region by a partly covered pixel.
 
+## Intake
+- If a video can't be read, the error now says why (ffprobe's own message and the file name) instead of being empty.
+
 # EndoSeg — v0.3.0 (2026-11-02)
 
 ## Everything on the NAS: Raw → Annotated 1 → Annotated 2
